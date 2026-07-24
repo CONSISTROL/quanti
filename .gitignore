@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Cache
+cache/
+
+# Reports
+report_*.html
+选股结果*.csv
+
+# Virtual environment
+venv/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
