@@ -73,6 +73,20 @@ def _code_to_sina(code):
     return f'sh{code}'
 
 
+def _code_to_fund_sina(code):
+    """
+    将ETF/LOF的6位代码转换为Sina格式 (带交易所前缀)
+    5开头 → sh (上海: 510xxx, 512xxx, 518xxx, 588xxx 等)
+    1开头 → sz (深圳: 159xxx, 161xxx 等)
+    0开头 → sz (深圳: 部分LOF)
+    """
+    code = str(code).zfill(6)
+    if code.startswith('5'):
+        return f'sh{code}'
+    else:
+        return f'sz{code}'
+
+
 def _code_pure(code):
     """从带前缀的代码中提取纯6位数字"""
     code = str(code)
@@ -338,25 +352,30 @@ def _fetch_history_worker(args):
     """
     多进程worker: 获取单只股票历史K线
     V8 和 Session 由 _init_worker 初始化, 进程内复用
-    args: (sym, sleep_time) 元组
+    args: (sym, sleep_time, max_bars) 元组
     """
-    sym, sleep_time = args
+    if len(args) == 3:
+        sym, sleep_time, max_bars = args
+    else:
+        sym, sleep_time = args
+        max_bars = 300
 
     if sleep_time > 0:
         time.sleep(sleep_time * random.uniform(0.5, 1.5))
 
     df = _fast_fetch_stock_history(sym)
     if df is not None and len(df) >= 30:
-        return (sym, df.tail(300).reset_index(drop=True))
+        return (sym, df.tail(max_bars).reset_index(drop=True))
     return (sym, None)
 
 
 def fetch_history_batch(symbols, cache_dir='cache', sleep_time=0.15,
-                        use_cache=True, workers=5):
+                        use_cache=True, workers=5, max_bars=300):
     """
     批量获取个股历史K线数据 (多进程并发, V8 进程内复用)
     symbols: Sina格式代码列表 (如 ['sh600519', 'sz000001', ...])
     workers: 并发进程数 (默认8)
+    max_bars: 每只股票保留的最大K线条数 (默认300, 估值/回测模式可传1200)
     返回: {sina_symbol: DataFrame, ...}
 
     优化策略:
@@ -385,8 +404,8 @@ def fetch_history_batch(symbols, cache_dir='cache', sleep_time=0.15,
         print(f"  需要获取 {len(to_fetch)} 只股票的历史K线 "
               f"(并发{workers}进程, 约{est_time:.0f}分钟)...")
 
-        # 构造 (sym, sleep_time) 元组列表
-        fetch_args = [(s, sleep_time) for s in to_fetch]
+        # 构造 (sym, sleep_time, max_bars) 元组列表
+        fetch_args = [(s, sleep_time, max_bars) for s in to_fetch]
 
         success_count = 0
         fail_count = 0
@@ -417,6 +436,221 @@ def fetch_history_batch(symbols, cache_dir='cache', sleep_time=0.15,
         save_cache(hist_cache, 'hist_batch', cache_dir)
 
     # 返回不含 _date 键的纯数据字典
+    return {k: v for k, v in hist_cache.items() if k != '_date'}
+
+
+# ============================================================
+# ETF / LOF 数据采集
+# ============================================================
+
+def fetch_etf_spot_data(cache_dir='cache', use_cache=True):
+    """
+    获取全市场ETF实时行情 (东方财富数据源)
+    返回对齐后的DataFrame，列名与stock spot兼容
+    特殊列: IOPV实时估值, 基金折价率, 最新份额
+    """
+    if use_cache:
+        cached = load_cache('etf_spot', cache_dir)
+        if cached is not None:
+            print("  ✓ 从缓存加载ETF行情")
+            return cached
+
+    print(f"  正在获取全市场ETF实时行情 (约1500+只)...")
+    df = retry_api_call(lambda: ak.fund_etf_spot_em())
+    if df is not None and not df.empty:
+        # 代码列转为str并添加Sina前缀
+        code_col = _find_column(df, ['代码'])
+        if code_col:
+            df[code_col] = df[code_col].astype(str).str.zfill(6).apply(_code_to_fund_sina)
+        print(f"  ✓ 获取 {len(df)} 只ETF实时行情")
+        save_cache(df, 'etf_spot', cache_dir)
+    return df
+
+
+def fetch_lof_spot_data(cache_dir='cache', use_cache=True):
+    """
+    获取全市场LOF实时行情 (东方财富数据源)
+    返回对齐后的DataFrame，列名与stock spot兼容
+    """
+    if use_cache:
+        cached = load_cache('lof_spot', cache_dir)
+        if cached is not None:
+            print("  ✓ 从缓存加载LOF行情")
+            return cached
+
+    print(f"  正在获取全市场LOF实时行情...")
+    df = retry_api_call(lambda: ak.fund_lof_spot_em())
+    if df is not None and not df.empty:
+        code_col = _find_column(df, ['代码'])
+        if code_col:
+            df[code_col] = df[code_col].astype(str).str.zfill(6).apply(_code_to_fund_sina)
+        print(f"  ✓ 获取 {len(df)} 只LOF实时行情")
+        save_cache(df, 'lof_spot', cache_dir)
+    return df
+
+
+def filter_fund_universe(fund_df, fund_type='etf'):
+    """
+    过滤ETF/LOF:
+    - 排除成交量=0（停牌/未上市）
+    - 排除价格≤0
+    - 排除规模过小（流通市值 < 1亿）
+    """
+    if fund_df is None or fund_df.empty:
+        return fund_df
+
+    df = fund_df.copy()
+    initial_count = len(df)
+    type_label = 'ETF' if fund_type == 'etf' else 'LOF'
+
+    vol_col = _find_column(df, ['成交量'])
+    price_col = _find_column(df, ['最新价'])
+    mcap_col = _find_column(df, ['流通市值'])
+
+    for col in [vol_col, price_col, mcap_col]:
+        if col and col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # 排除停牌
+    suspended = 0
+    if vol_col:
+        suspended = (df[vol_col] <= 0).sum()
+        df = df[df[vol_col] > 0]
+
+    # 排除价格异常
+    if price_col:
+        df = df[df[price_col] > 0]
+
+    # 排除规模过小 (< 1亿)
+    small_excluded = 0
+    if mcap_col:
+        small_excluded = (df[mcap_col] < 1e8).sum()
+        df = df[df[mcap_col] >= 1e8]
+
+    print(f"  {type_label}过滤: {initial_count} → {len(df)} 只")
+    print(f"    排除: 停牌 {suspended} | 规模过小 {small_excluded}")
+
+    return df
+
+
+def _fetch_fund_hist_worker(args):
+    """
+    多进程worker: 获取单只ETF/LOF历史K线 (东方财富数据源)
+    args: (code, sleep_time, fund_type, max_bars) 元组
+    code: 纯6位数字代码
+    fund_type: 'etf' 或 'lof'
+    """
+    code, sleep_time, fund_type, max_bars = args
+
+    if sleep_time > 0:
+        time.sleep(sleep_time * random.uniform(0.5, 1.5))
+
+    try:
+        # 计算日期范围
+        end_date = datetime.now().strftime('%Y%m%d')
+        start_date = (datetime.now() - timedelta(days=int(max_bars * 1.8))).strftime('%Y%m%d')
+
+        if fund_type == 'etf':
+            df = ak.fund_etf_hist_em(
+                symbol=str(code).zfill(6), period='daily',
+                start_date=start_date, end_date=end_date, adjust='qfq'
+            )
+        else:
+            df = ak.fund_lof_hist_em(
+                symbol=str(code).zfill(6), period='daily',
+                start_date=start_date, end_date=end_date, adjust='qfq'
+            )
+
+        if df is None or df.empty or len(df) < 30:
+            return (code, None)
+
+        # 列名映射: 中文 → 英文 (与stock K线格式对齐)
+        col_map = {
+            '日期': 'date', '开盘': 'open', '收盘': 'close',
+            '最高': 'high', '最低': 'low', '成交量': 'volume',
+        }
+        df = df.rename(columns=col_map)
+
+        # 确保关键列存在
+        needed = ['date', 'open', 'high', 'low', 'close', 'volume']
+        for col in needed:
+            if col not in df.columns:
+                return (code, None)
+
+        df['date'] = pd.to_datetime(df['date'])
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        df = df.sort_values('date').tail(max_bars).reset_index(drop=True)
+        return (code, df)
+
+    except Exception:
+        return (code, None)
+
+
+def fetch_fund_history_batch(codes, fund_type='etf', cache_dir='cache',
+                             sleep_time=0.15, use_cache=True, workers=5, max_bars=300):
+    """
+    批量获取ETF/LOF历史K线 (多进程并发, 东方财富数据源)
+    codes: 纯6位数字代码列表
+    fund_type: 'etf' 或 'lof'
+    max_bars: 每只保留的最大K线条数
+    返回: {sina_symbol: DataFrame, ...}  (key带sh/sz前缀)
+    """
+    type_label = 'ETF' if fund_type == 'etf' else 'LOF'
+    cache_name = f'hist_{fund_type}'
+
+    # 加载缓存
+    hist_cache = {}
+    if use_cache:
+        cached = load_cache(cache_name, cache_dir)
+        if cached and isinstance(cached, dict):
+            today = datetime.now().strftime('%Y%m%d')
+            if cached.get('_date') == today:
+                hist_cache = cached
+                cached_count = len([k for k in hist_cache if k != '_date'])
+                print(f"  ✓ 从缓存加载 {cached_count} 只{type_label}的历史数据")
+
+    # 转为Sina格式key
+    code_to_sina = {_code_pure(c): _code_to_fund_sina(_code_pure(c)) for c in codes}
+
+    # 找出需要获取的
+    to_fetch = [c for c in codes if _code_to_fund_sina(str(c).zfill(6)) not in hist_cache]
+
+    if to_fetch:
+        workers = min(workers, 8)
+        est_time = len(to_fetch) * 0.5 / workers / 60
+        print(f"  需要获取 {len(to_fetch)} 只{type_label}的历史K线 "
+              f"(并发{workers}进程, 约{est_time:.0f}分钟)...")
+
+        fetch_args = [(str(c).zfill(6), sleep_time, fund_type, max_bars) for c in to_fetch]
+
+        success_count = 0
+        fail_count = 0
+        save_interval = max(50, len(to_fetch) // 5)
+
+        ctx = multiprocessing.get_context('spawn')
+        with ctx.Pool(processes=workers) as pool:
+            with tqdm(total=len(to_fetch), desc=f"{type_label}历史", ncols=80) as pbar:
+                for code, df in pool.imap_unordered(_fetch_fund_hist_worker, fetch_args):
+                    if df is not None:
+                        sina_key = _code_to_fund_sina(code)
+                        hist_cache[sina_key] = df
+                        success_count += 1
+                    else:
+                        fail_count += 1
+                    pbar.update(1)
+
+                    total_done = success_count + fail_count
+                    if total_done % save_interval == 0:
+                        hist_cache['_date'] = datetime.now().strftime('%Y%m%d')
+                        save_cache(hist_cache, cache_name, cache_dir)
+
+        print(f"  {type_label}历史: 成功 {success_count} | 失败 {fail_count}")
+
+        hist_cache['_date'] = datetime.now().strftime('%Y%m%d')
+        save_cache(hist_cache, cache_name, cache_dir)
+
     return {k: v for k, v in hist_cache.items() if k != '_date'}
 
 
@@ -529,9 +763,12 @@ def build_sector_map(financial_df):
 def fetch_all_data(args):
     """
     获取所有需要的数据，返回结构化字典
+    支持股票 + ETF/LOF混合选股
     """
     cache_dir = args.cache_dir
     use_cache = not args.no_cache
+    include_etf_lof = getattr(args, 'include_etf_lof', False)
+    max_bars = getattr(args, 'hist_days', 300)
 
     # ---- Step 1: 实时行情 (Sina) ----
     print("[1/4] 获取全A股实时行情 (Sina)...")
@@ -553,12 +790,57 @@ def fetch_all_data(args):
     # ---- Step 3: 过滤股票池 (使用财报EPS过滤亏损股) ----
     print(f"\n[3/4] 过滤股票池...")
     filtered_df = filter_universe(spot_df, financial_df)
+    # 标记资产类型
+    filtered_df['_asset_type'] = 'stock'
+
+    # ---- ETF/LOF ----
+    etf_spot_df = None
+    lof_spot_df = None
+    if include_etf_lof:
+        print(f"\n[3/4+] 获取ETF/LOF行情...")
+
+        # ETF
+        etf_raw = fetch_etf_spot_data(cache_dir, use_cache)
+        if etf_raw is not None and not etf_raw.empty:
+            etf_spot_df = filter_fund_universe(etf_raw, 'etf')
+            etf_spot_df['_asset_type'] = 'etf'
+
+        # LOF
+        lof_raw = fetch_lof_spot_data(cache_dir, use_cache)
+        if lof_raw is not None and not lof_raw.empty:
+            lof_spot_df = filter_fund_universe(lof_raw, 'lof')
+            lof_spot_df['_asset_type'] = 'lof'
+
+        # 对齐列名并合并
+        common_cols = ['代码', '名称', '最新价', '涨跌额', '涨跌幅', '成交量', '成交额', '_asset_type']
+
+        def _align_columns(df, cols):
+            """只保留公共列，确保可以合并"""
+            available = [c for c in cols if c in df.columns]
+            return df[available].copy()
+
+        parts = [_align_columns(filtered_df, common_cols)]
+        if etf_spot_df is not None:
+            parts.append(_align_columns(etf_spot_df, common_cols))
+        if lof_spot_df is not None:
+            parts.append(_align_columns(lof_spot_df, common_cols))
+
+        if len(parts) > 1:
+            filtered_df = pd.concat(parts, ignore_index=True)
+            print(f"  ✓ 合并: 股票 + ETF + LOF = {len(filtered_df)} 只")
 
     # 提取Sina格式代码列表
     code_col = _find_column(filtered_df, ['代码'])
     sina_symbols = filtered_df[code_col].astype(str).tolist()
 
-    # ---- Step 4: 历史K线 (Sina) ----
+    # 构建资产类型映射
+    asset_type_map = {}
+    if '_asset_type' in filtered_df.columns:
+        for _, row in filtered_df.iterrows():
+            code = str(row[code_col])
+            asset_type_map[code] = row['_asset_type']
+
+    # ---- Step 4: 历史K线 ----
     history_dict = {}
     skip_history = getattr(args, 'no_history', False)
     workers = getattr(args, 'workers', 5)
@@ -567,14 +849,44 @@ def fetch_all_data(args):
         print(f"\n[4/4] 跳过历史K线获取 (--no_history 快速模式)")
         print(f"  ⚠ 动量和风险因子将不可用")
     else:
-        print(f"\n[4/4] 获取 {len(sina_symbols)} 只股票的历史K线 (Sina, {workers}线程)...")
-        history_dict = fetch_history_batch(
-            sina_symbols, cache_dir, args.sleep, use_cache, workers
-        )
+        # 分离股票和基金的代码
+        stock_symbols = [s for s in sina_symbols if asset_type_map.get(s, 'stock') == 'stock']
+        etf_symbols_pure = [_code_pure(s) for s in sina_symbols if asset_type_map.get(s) == 'etf']
+        lof_symbols_pure = [_code_pure(s) for s in sina_symbols if asset_type_map.get(s) == 'lof']
+
+        # 股票历史K线 (Sina)
+        if stock_symbols:
+            print(f"\n[4/4] 获取 {len(stock_symbols)} 只股票的历史K线 (Sina, {workers}进程)...")
+            history_dict = fetch_history_batch(
+                stock_symbols, cache_dir, args.sleep, use_cache, workers, max_bars
+            )
+
+        # ETF历史K线 (东方财富)
+        if etf_symbols_pure:
+            print(f"\n[4/4+] 获取 {len(etf_symbols_pure)} 只ETF的历史K线 (东方财富)...")
+            etf_hist = fetch_fund_history_batch(
+                etf_symbols_pure, 'etf', cache_dir, args.sleep, use_cache, workers, max_bars
+            )
+            history_dict.update(etf_hist)
+
+        # LOF历史K线 (东方财富)
+        if lof_symbols_pure:
+            print(f"\n[4/4+] 获取 {len(lof_symbols_pure)} 只LOF的历史K线 (东方财富)...")
+            lof_hist = fetch_fund_history_batch(
+                lof_symbols_pure, 'lof', cache_dir, args.sleep, use_cache, workers, max_bars
+            )
+            history_dict.update(lof_hist)
 
     # ---- 行业分类 (从财报中提取, 无需额外API调用) ----
     print("\n[附加] 构建行业分类...")
     sector_map = build_sector_map(financial_df)
+
+    # ETF/LOF行业标记为"基金"
+    for sym in sina_symbols:
+        pure = _code_pure(sym)
+        atype = asset_type_map.get(sym, 'stock')
+        if atype in ('etf', 'lof') and pure not in sector_map:
+            sector_map[pure] = 'ETF/LOF基金'
 
     return {
         'spot': spot_df,
@@ -584,4 +896,7 @@ def fetch_all_data(args):
         'history': history_dict,
         'sector_map': sector_map,
         'symbols': sina_symbols,
+        'asset_type_map': asset_type_map,
+        'etf_spot': etf_spot_df,
+        'lof_spot': lof_spot_df,
     }

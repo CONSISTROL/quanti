@@ -104,7 +104,7 @@ def _build_financial_lookup(financial_df):
 # ============================================================
 
 def calculate_all_factors(spot_filtered, financial_df, financial_prev_df,
-                          history_dict, sector_map):
+                          history_dict, sector_map, asset_type_map=None):
     """
     计算所有因子，返回包含全部因子值的DataFrame
 
@@ -114,10 +114,14 @@ def calculate_all_factors(spot_filtered, financial_df, financial_prev_df,
         financial_prev_df: 去年同期财报 (备用)
         history_dict: {Sina代码: 历史K线DataFrame}
         sector_map: {纯6位代码: 行业名称}
+        asset_type_map: {Sina代码: 'stock'/'etf'/'lof'} (可选)
     """
     code_col = _find_column(spot_filtered, ['代码'])
     name_col = _find_column(spot_filtered, ['名称'])
     price_col = _find_column(spot_filtered, ['最新价'])
+
+    if asset_type_map is None:
+        asset_type_map = {}
 
     # 构建财报查找表 (O(1) 查找)
     fin_lookup = _build_financial_lookup(financial_df)
@@ -128,59 +132,64 @@ def calculate_all_factors(spot_filtered, financial_df, financial_prev_df,
         sina_code = str(row[code_col])
         pure_code = _code_pure(sina_code)
         price = _safe_float(row.get(price_col, np.nan))
+        asset_type = asset_type_map.get(sina_code, 'stock')
 
-        # 获取财报数据
-        fin = fin_lookup.get(pure_code, {})
+        # 获取财报数据 (仅股票有)
+        fin = fin_lookup.get(pure_code, {}) if asset_type == 'stock' else {}
 
         rec = {
             'code': pure_code,
             'name': row[name_col],
             'price': price if price else np.nan,
             'sector': sector_map.get(pure_code, '未知'),
+            'asset_type': asset_type,
         }
 
-        # ---- 价值因子 ----
-        eps = fin.get('eps', np.nan)
-        bvps = fin.get('bvps', np.nan)
-        revenue = fin.get('revenue', np.nan)
-        net_profit = fin.get('net_profit', np.nan)
+        # ---- 价值因子 (仅股票) ----
+        if asset_type == 'stock':
+            eps = fin.get('eps', np.nan)
+            bvps = fin.get('bvps', np.nan)
+            revenue = fin.get('revenue', np.nan)
+            net_profit = fin.get('net_profit', np.nan)
 
-        # EP = 1/PE = EPS/Price (越高越便宜)
-        if price and price > 0 and eps and not np.isnan(eps) and eps > 0:
-            rec['ep'] = eps / price
+            # EP = 1/PE = EPS/Price (越高越便宜)
+            if price and price > 0 and eps and not np.isnan(eps) and eps > 0:
+                rec['ep'] = eps / price
+            else:
+                rec['ep'] = np.nan
+
+            # BP = 1/PB = BVPS/Price (越高越便宜)
+            if price and price > 0 and bvps and not np.isnan(bvps) and bvps > 0:
+                rec['bp'] = bvps / price
+            else:
+                rec['bp'] = np.nan
+
+            # SP = 1/PS = Revenue/MarketCap (越高越便宜)
+            if (price and price > 0 and eps and not np.isnan(eps) and eps > 0
+                    and net_profit and not np.isnan(net_profit) and net_profit > 0
+                    and revenue and not np.isnan(revenue) and revenue > 0):
+                total_shares = net_profit / eps
+                est_market_cap = price * total_shares
+                rec['sp'] = revenue / est_market_cap
+            else:
+                rec['sp'] = np.nan
+
+            # ---- 质量因子 (仅股票) ----
+            rec['roe'] = fin.get('roe', np.nan)
+            rec['gross_margin'] = fin.get('gross_margin', np.nan)
+
+            # ---- 成长因子 (仅股票) ----
+            rev_g = fin.get('rev_growth', np.nan)
+            profit_g = fin.get('profit_growth', np.nan)
+            rec['rev_growth'] = np.clip(rev_g, -1.0, 5.0) if not np.isnan(rev_g) else np.nan
+            rec['profit_growth'] = np.clip(profit_g, -1.0, 5.0) if not np.isnan(profit_g) else np.nan
         else:
-            rec['ep'] = np.nan
+            # ETF/LOF: 无财务因子
+            rec['ep'] = rec['bp'] = rec['sp'] = np.nan
+            rec['roe'] = rec['gross_margin'] = np.nan
+            rec['rev_growth'] = rec['profit_growth'] = np.nan
 
-        # BP = 1/PB = BVPS/Price (越高越便宜)
-        if price and price > 0 and bvps and not np.isnan(bvps) and bvps > 0:
-            rec['bp'] = bvps / price
-        else:
-            rec['bp'] = np.nan
-
-        # SP = 1/PS = Revenue/MarketCap (越高越便宜)
-        # MarketCap ≈ Price × (NetProfit / EPS)
-        if (price and price > 0 and eps and not np.isnan(eps) and eps > 0
-                and net_profit and not np.isnan(net_profit) and net_profit > 0
-                and revenue and not np.isnan(revenue) and revenue > 0):
-            total_shares = net_profit / eps
-            est_market_cap = price * total_shares
-            rec['sp'] = revenue / est_market_cap
-        else:
-            rec['sp'] = np.nan
-
-        # ---- 质量因子 ----
-        rec['roe'] = fin.get('roe', np.nan)
-        rec['gross_margin'] = fin.get('gross_margin', np.nan)
-
-        # ---- 成长因子 (使用财报预计算的同比增长率) ----
-        rev_g = fin.get('rev_growth', np.nan)
-        profit_g = fin.get('profit_growth', np.nan)
-        # 截断极端值: -100% ~ +500%
-        rec['rev_growth'] = np.clip(rev_g, -1.0, 5.0) if not np.isnan(rev_g) else np.nan
-        rec['profit_growth'] = np.clip(profit_g, -1.0, 5.0) if not np.isnan(profit_g) else np.nan
-
-        # ---- 动量 & 风险因子 (来自历史K线) ----
-        # history_dict 使用 Sina 格式代码作为 key
+        # ---- 动量 & 风险因子 (来自历史K线, 股票和ETF/LOF通用) ----
         hist = history_dict.get(sina_code)
         if hist is not None and len(hist) >= 30 and 'close' in hist.columns:
             closes = hist['close'].values.astype(float)
@@ -213,8 +222,8 @@ def calculate_all_factors(spot_filtered, financial_df, financial_prev_df,
         records.append(rec)
 
     df = pd.DataFrame(records)
-    n_factors = sum(1 for k in df.columns if k not in ['code', 'name', 'price', 'sector'])
-    print(f"  计算完成: {len(df)} 只股票, {n_factors} 个因子")
+    n_factors = sum(1 for k in df.columns if k not in ['code', 'name', 'price', 'sector', 'asset_type'])
+    print(f"  计算完成: {len(df)} 只证券, {n_factors} 个因子")
 
     # 统计各因子的有效数据比例
     for group_key, group in FACTOR_GROUPS.items():
@@ -294,6 +303,9 @@ def score_stocks(factor_df, weights):
     df['_available'] = 0.0
     df['_total'] = 0.0
 
+    # ETF/LOF仅预期有动量+风险因子，股票预期全部5组
+    _fund_expected_groups = {'momentum', 'risk'}
+
     for group_key, group_info in FACTOR_GROUPS.items():
         weight = weights.get(group_key, 0.2)
         factors = [f for f in group_info['factors'] if f in zscored]
@@ -307,12 +319,35 @@ def score_stocks(factor_df, weights):
         df['composite_score'] += weight * sub_score.fillna(0)
 
         available = factor_matrix.notna().sum(axis=1)
-        df['_available'] += available
-        df['_total'] += len(factors)
+
+        # 根据资产类型调整预期因子数
+        if 'asset_type' in df.columns:
+            is_fund = df['asset_type'].isin(['etf', 'lof'])
+            # 基金类型: 仅动量+风险算入_total
+            if group_key in _fund_expected_groups:
+                df.loc[is_fund, '_available'] += available[is_fund]
+                df.loc[is_fund, '_total'] += len(factors)
+            # 股票类型: 所有组都算入
+            df.loc[~is_fund, '_available'] += available[~is_fund]
+            df.loc[~is_fund, '_total'] += len(factors)
+        else:
+            df['_available'] += available
+            df['_total'] += len(factors)
 
     # ---- 3. 缺失因子惩罚 ----
+    # ETF/LOF: 仅对动量+风险的缺失做惩罚
+    # 股票: 对所有5组的缺失做惩罚
     ratio = (df['_available'] / df['_total'].replace(0, np.nan)).fillna(0.5)
     df['composite_score'] *= np.sqrt(ratio)
+
+    # 对于ETF/LOF，重新归一化权重（仅使用动量+风险的权重）
+    if 'asset_type' in df.columns:
+        fund_weight_total = weights.get('momentum', 0) + weights.get('risk', 0)
+        if fund_weight_total > 0 and fund_weight_total < 1.0:
+            scale = 1.0 / fund_weight_total
+            is_fund = df['asset_type'].isin(['etf', 'lof'])
+            # 对基金的综合得分做权重归一化（使其与股票可比）
+            df.loc[is_fund, 'composite_score'] *= scale
 
     # ---- 4. 排名 ----
     df['rank'] = df['composite_score'].rank(ascending=False, method='min').astype(int)
@@ -320,5 +355,8 @@ def score_stocks(factor_df, weights):
     df = df.drop(columns=['_available', '_total'], errors='ignore')
     df = df.sort_values('composite_score', ascending=False).reset_index(drop=True)
 
-    print(f"  打分完成: {len(df)} 只股票参与排名")
+    # 统计
+    n_stock = (df['asset_type'] == 'stock').sum() if 'asset_type' in df.columns else len(df)
+    n_fund = (df['asset_type'].isin(['etf', 'lof'])).sum() if 'asset_type' in df.columns else 0
+    print(f"  打分完成: {len(df)} 只证券参与排名 (股票 {n_stock} + 基金 {n_fund})")
     return df

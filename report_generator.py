@@ -36,23 +36,34 @@ def _pad_right(s, width):
 # 终端报告
 # ============================================================
 
-def print_terminal_report(scored_df, top_n, weights, spot_filtered=None):
+def print_terminal_report(scored_df, top_n, weights, spot_filtered=None,
+                          backtest_result=None):
     """在终端打印格式化的选股结果"""
     top = scored_df.head(top_n)
 
     # ---- 表头 ----
-    print("\n" + "═" * 82)
+    print("\n" + "═" * 95)
     print("  A股多因子量化选股报告")
     print(f"  生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     w = weights
     print(f"  因子权重: 价值{w.get('value',0.25):.0%} | 成长{w.get('growth',0.20):.0%} | "
           f"质量{w.get('quality',0.25):.0%} | 动量{w.get('momentum',0.20):.0%} | "
           f"风险{w.get('risk',0.10):.0%}")
-    print("═" * 82)
+    print("═" * 95)
 
     total = len(scored_df)
     valid = scored_df['composite_score'].notna().sum()
-    print(f"  参与排名: {total} 只 | 有效打分: {valid} 只 | 展示 TOP {top_n}")
+
+    # 资产类型统计
+    has_asset_type = 'asset_type' in scored_df.columns
+    type_info = ''
+    if has_asset_type:
+        n_stock = (scored_df['asset_type'] == 'stock').sum()
+        n_etf = (scored_df['asset_type'] == 'etf').sum()
+        n_lof = (scored_df['asset_type'] == 'lof').sum()
+        type_info = f' (股票{n_stock} + ETF{n_etf} + LOF{n_lof})'
+
+    print(f"  参与排名: {total} 只{type_info} | 有效打分: {valid} 只 | 展示 TOP {top_n}")
 
     # ---- 市场统计 ----
     if spot_filtered is not None:
@@ -67,19 +78,28 @@ def print_terminal_report(scored_df, top_n, weights, spot_filtered=None):
         except Exception:
             pass
 
-    print("═" * 82)
+    print("═" * 95)
+
+    # 是否有买卖参考价
+    has_targets = 'buy_low' in scored_df.columns and scored_df['buy_low'].notna().any()
 
     # ---- 表头行 ----
-    header = (f" {'排名':>4}  {'代码':<8} {'名称':<8} "
+    header = (f" {'排名':>4}  {'类型':>4} {'代码':<8} {'名称':<8} "
               f"{'现价':>7}  {'综合':>5}  "
               f"{'价值':>5}  {'成长':>5}  {'质量':>5}  {'动量':>5}  {'风险':>5}")
+    if has_targets:
+        header += f"  {'买入区间':>12}  {'卖出区间':>12}"
     print(header)
-    print("─" * 82)
+    print("─" * (95 + (28 if has_targets else 0)))
 
     # ---- 数据行 ----
     for _, row in top.iterrows():
         code = str(row.get('code', '')).zfill(6)
         name = str(row.get('name', ''))
+
+        # 资产类型标签
+        atype = row.get('asset_type', 'stock')
+        type_label = {'stock': '股票', 'etf': 'ETF', 'lof': 'LOF'}.get(atype, '股票')
 
         price = row.get('price', np.nan)
         score = row.get('composite_score', 0)
@@ -89,13 +109,25 @@ def print_terminal_report(scored_df, top_n, weights, spot_filtered=None):
             v = row.get(col, np.nan)
             return f"{v:>5.2f}" if pd.notna(v) else "    -"
 
-        print(f" {int(row.get('rank', 0)):>4}  {code:<8} {_pad_right(name, 8)} "
-              f"{price:>7.1f}  {score:>5.2f}  "
+        line = (f" {int(row.get('rank', 0)):>4}  {type_label:>4} {code:<8} {_pad_right(name, 8)} "
+              f"{price:>7.2f}  {score:>5.2f}  "
               f"{_fmt_score('value')}  {_fmt_score('growth')}  "
               f"{_fmt_score('quality')}  {_fmt_score('momentum')}  "
               f"{_fmt_score('risk')}")
 
-    print("─" * 82)
+        if has_targets:
+            bl = row.get('buy_low', np.nan)
+            bh = row.get('buy_high', np.nan)
+            sl = row.get('sell_low', np.nan)
+            sh = row.get('sell_high', np.nan)
+
+            buy_str = f"{bl:.2f}~{bh:.2f}" if pd.notna(bl) and pd.notna(bh) else "  -"
+            sell_str = f"{sl:.2f}~{sh:.2f}" if pd.notna(sl) and pd.notna(sh) else "  -"
+            line += f"  {buy_str:>12}  {sell_str:>12}"
+
+        print(line)
+
+    print("─" * (95 + (28 if has_targets else 0)))
     print("  ⚠️  本报告仅供学习研究，不构成投资建议。投资有风险，入市需谨慎。")
     print()
 
@@ -104,7 +136,8 @@ def print_terminal_report(scored_df, top_n, weights, spot_filtered=None):
 # HTML报告
 # ============================================================
 
-def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=None):
+def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=None,
+                         backtest_result=None):
     """生成交互式HTML报告（含plotly图表）"""
     top = scored_df.head(top_n)
     total = len(scored_df)
@@ -134,6 +167,14 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     market_stats['平均得分'] = f"{avg_score:.2f}"
     market_stats['最高得分'] = f"{scored_df['composite_score'].max():.2f}"
 
+    # 资产类型统计
+    has_asset_type = 'asset_type' in scored_df.columns
+    if has_asset_type:
+        n_stock = (scored_df['asset_type'] == 'stock').sum()
+        n_etf = (scored_df['asset_type'] == 'etf').sum()
+        n_lof = (scored_df['asset_type'] == 'lof').sum()
+        market_stats['股票/ETF/LOF'] = f'{n_stock}/{n_etf}/{n_lof}'
+
     # ---- 构建HTML ----
     html_parts = []
 
@@ -154,7 +195,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
 
     # === 统计卡片 ===
     html_parts.append('<div class="cards">')
-    _add_card(html_parts, '扫描股票', f'{total:,}', '只')
+    _add_card(html_parts, '扫描证券', f'{total:,}', '只')
     _add_card(html_parts, '有效打分', f'{scored_df["composite_score"].notna().sum():,}', '只')
     _add_card(html_parts, '展示 TOP', str(top_n), '只')
     for key, val in market_stats.items():
@@ -200,7 +241,49 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     </div>
     """)
 
+    # 5. 资产类型分布 (如果有ETF/LOF)
+    if has_asset_type and scored_df['asset_type'].nunique() > 1:
+        pie_html = _plot_asset_type_pie(scored_df, top)
+        html_parts.append(f"""
+    <div class="chart-container">
+        <h2>📦 资产类型分布</h2>
+        {pie_html}
+    </div>
+    """)
+
+    # 6. 估值分位数分布 (如果有买卖参考价)
+    has_targets = 'pe_percentile' in scored_df.columns and scored_df['pe_percentile'].notna().any()
+    if has_targets:
+        val_html = _plot_valuation_distribution(scored_df, top)
+        html_parts.append(f"""
+    <div class="chart-container">
+        <h2>📊 估值分位数分布</h2>
+        {val_html}
+    </div>
+    """)
+
     html_parts.append('</div>')  # charts-grid
+
+    # === 回测图表区 ===
+    if backtest_result is not None and backtest_result.n_rebalances > 0:
+        html_parts.append('<h2 style="margin:24px 0 12px;color:#1a1a2e;">🔬 回测结果</h2>')
+
+        # 回测摘要表
+        html_parts.append(_build_backtest_summary_table(backtest_result))
+
+        # 回测图表
+        from backtest import generate_backtest_charts
+        bt_charts = generate_backtest_charts(backtest_result)
+        if bt_charts:
+            html_parts.append('<div class="charts-grid">')
+            for title, chart_html in bt_charts:
+                html_parts.append(f"""
+    <div class="chart-container">
+        <h2>{title}</h2>
+        {chart_html}
+    </div>
+    """)
+            html_parts.append('</div>')
 
     # === 详细表格 ===
     html_parts.append(_build_table(top))
@@ -458,6 +541,9 @@ def _plot_factor_scatter(scored_df, top_df, colors):
 
 def _build_table(top_df):
     """构建可排序的详细表格"""
+    has_asset_type = 'asset_type' in top_df.columns
+    has_targets = 'buy_low' in top_df.columns and top_df['buy_low'].notna().any()
+
     rows_html = []
     for i, (_, row) in enumerate(top_df.iterrows()):
         rank = int(row.get('rank', i + 1))
@@ -478,8 +564,42 @@ def _build_table(top_df):
         if sector == '未知':
             sector = '-'
 
+        # 资产类型标签
+        type_html = ''
+        if has_asset_type:
+            atype = row.get('asset_type', 'stock')
+            type_colors = {'stock': '#3498db', 'etf': '#e67e22', 'lof': '#9b59b6'}
+            type_labels = {'stock': '股票', 'etf': 'ETF', 'lof': 'LOF'}
+            color = type_colors.get(atype, '#3498db')
+            label = type_labels.get(atype, '股票')
+            type_html = f'<td><span style="background:{color};color:white;padding:2px 8px;border-radius:10px;font-size:11px;">{label}</span></td>'
+
+        # 买卖参考价
+        target_html = ''
+        if has_targets:
+            bl = row.get('buy_low', np.nan)
+            bh = row.get('buy_high', np.nan)
+            sl = row.get('sell_low', np.nan)
+            sh = row.get('sell_high', np.nan)
+            pe_pct = row.get('pe_percentile', np.nan)
+
+            buy_str = f'{bl:.2f}~{bh:.2f}' if pd.notna(bl) and pd.notna(bh) else '-'
+            sell_str = f'{sl:.2f}~{sh:.2f}' if pd.notna(sl) and pd.notna(sh) else '-'
+            pe_str = f'{pe_pct:.0f}%' if pd.notna(pe_pct) else '-'
+
+            # 估值颜色
+            pe_css = ''
+            if pd.notna(pe_pct):
+                if pe_pct < 30:
+                    pe_css = 'style="color:#27ae60;font-weight:600;"'  # 低估 绿色
+                elif pe_pct > 70:
+                    pe_css = 'style="color:#e74c3c;font-weight:600;"'  # 高估 红色
+
+            target_html = f'<td style="color:#27ae60;">{buy_str}</td><td style="color:#e74c3c;">{sell_str}</td><td {pe_css}>{pe_str}</td>'
+
         rows_html.append(f"""<tr>
             <td><span class="rank-badge {badge_class}">{rank}</span></td>
+            {type_html}
             <td><strong>{str(row.get('code', '')).zfill(6)}</strong></td>
             <td>{row.get('name', '')}</td>
             <td>{sector}</td>
@@ -487,15 +607,151 @@ def _build_table(top_df):
             <td><strong>{row.get('composite_score', 0):+.2f}</strong></td>
             {_cell('value')}{_cell('growth')}{_cell('quality')}
             {_cell('momentum')}{_cell('risk')}
+            {target_html}
         </tr>""")
+
+    # 表头
+    type_th = '<th>类型</th>' if has_asset_type else ''
+    target_ths = '<th>买入区间</th><th>卖出区间</th><th>PE百分位</th>' if has_targets else ''
 
     return f"""
     <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 详细排名</h2>
     <table>
     <thead><tr>
-        <th>排名</th><th>代码</th><th>名称</th><th>行业</th>
+        <th>排名</th>{type_th}<th>代码</th><th>名称</th><th>行业</th>
         <th>现价</th><th>综合</th>
         <th>价值</th><th>成长</th><th>质量</th><th>动量</th><th>风险</th>
+        {target_ths}
+    </tr></thead>
+    <tbody>{''.join(rows_html)}</tbody>
+    </table>
+    """
+
+
+# ============================================================
+# 新增图表: 资产类型分布
+# ============================================================
+
+def _plot_asset_type_pie(scored_df, top_df):
+    """资产类型分布饼图"""
+    type_map = {'stock': '股票', 'etf': 'ETF', 'lof': 'LOF'}
+    type_colors = {'stock': '#3498db', 'etf': '#e67e22', 'lof': '#9b59b6'}
+
+    # 全部证券
+    all_counts = scored_df['asset_type'].value_counts()
+    all_labels = [type_map.get(t, t) for t in all_counts.index]
+
+    # TOP N
+    top_counts = top_df['asset_type'].value_counts()
+    top_labels = [type_map.get(t, t) for t in top_counts.index]
+
+    fig = make_subplots(rows=1, cols=2, specs=[[{'type': 'pie'}, {'type': 'pie'}]])
+
+    fig.add_trace(go.Pie(
+        labels=all_labels, values=all_counts.values,
+        name='全部', hole=0.4,
+        marker=dict(colors=[type_colors.get(t, '#95a5a6') for t in all_counts.index]),
+    ), row=1, col=1)
+
+    fig.add_trace(go.Pie(
+        labels=top_labels, values=top_counts.values,
+        name='TOP N', hole=0.4,
+        marker=dict(colors=[type_colors.get(t, '#95a5a6') for t in top_counts.index]),
+    ), row=1, col=2)
+
+    fig.update_layout(
+        height=300, margin=dict(t=20, b=20, l=20, r=20),
+        annotations=[
+            dict(text='全部', x=0.22, y=0.5, font_size=14, showarrow=False),
+            dict(text='TOP N', x=0.78, y=0.5, font_size=14, showarrow=False),
+        ],
+        font=dict(size=12),
+    )
+    return fig.to_html(full_html=False, include_plotlyjs=False)
+
+
+# ============================================================
+# 新增图表: 估值分位数分布
+# ============================================================
+
+def _plot_valuation_distribution(scored_df, top_df):
+    """估值分位数分布直方图"""
+    if 'pe_percentile' not in scored_df.columns:
+        return '<p style="color:#999;text-align:center;padding:40px;">无估值数据</p>'
+
+    pe_all = scored_df['pe_percentile'].dropna()
+    pe_top = top_df['pe_percentile'].dropna()
+
+    if pe_all.empty:
+        return '<p style="color:#999;text-align:center;padding:40px;">无有效估值分位数据</p>'
+
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(
+        x=pe_all, nbinsx=20, name='全部',
+        marker=dict(color='rgba(52,152,219,0.35)'),
+    ))
+    fig.add_trace(go.Histogram(
+        x=pe_top, nbinsx=10, name='TOP 入选',
+        marker=dict(color='rgba(231,76,60,0.7)'),
+    ))
+
+    # 添加区域标注
+    fig.add_vrect(x0=0, x1=30, fillcolor='rgba(39,174,96,0.1)', line_width=0,
+                  annotation_text='低估', annotation_position='top left')
+    fig.add_vrect(x0=70, x1=100, fillcolor='rgba(231,76,60,0.1)', line_width=0,
+                  annotation_text='高估', annotation_position='top right')
+
+    fig.update_layout(
+        barmode='overlay', height=300,
+        margin=dict(t=20, b=40, l=50, r=20),
+        xaxis=dict(title='PE/PB历史百分位 (0%=最低, 100%=最高)', gridcolor='#f0f0f0'),
+        yaxis=dict(title='数量', gridcolor='#f0f0f0'),
+        legend=dict(orientation='h', y=1.12, x=0.5, xanchor='center'),
+        font=dict(size=12),
+    )
+    return fig.to_html(full_html=False, include_plotlyjs=False)
+
+
+# ============================================================
+# 新增: 回测摘要表格
+# ============================================================
+
+def _build_backtest_summary_table(result):
+    """回测结果摘要HTML表格"""
+    rows_html = []
+    for hp in sorted(result.periods.keys()):
+        ps = result.periods[hp]
+        bench = result.benchmark_periods.get(hp)
+
+        bench_avg = '-'
+        bench_wr = '-'
+        excess = '-'
+        if bench and bench.total_count > 0:
+            bench_avg = f'{bench.avg_return:+.2%}'
+            bench_wr = f'{bench.win_rate:.1%}'
+            excess_val = ps.avg_return - bench.avg_return
+            excess_css = 'color:#27ae60;' if excess_val > 0 else 'color:#e74c3c;'
+            excess = f'<span style="{excess_css}font-weight:600;">{excess_val:+.2%}</span>'
+
+        rows_html.append(f"""<tr>
+            <td><strong>{hp}日</strong></td>
+            <td>{result.n_rebalances}</td>
+            <td style="font-weight:600;">{ps.win_rate:.1%}</td>
+            <td>{ps.avg_return:+.2%}</td>
+            <td>{ps.median_return:+.2%}</td>
+            <td>{ps.sharpe:.2f}</td>
+            <td style="color:#e74c3c;">{ps.max_drawdown:.1%}</td>
+            <td>{bench_wr}</td>
+            <td>{bench_avg}</td>
+            <td>{excess}</td>
+        </tr>""")
+
+    return f"""
+    <table style="margin-bottom:20px;">
+    <thead><tr>
+        <th>持有周期</th><th>再平衡次数</th><th>策略胜率</th><th>策略均收益</th>
+        <th>策略中位数</th><th>Sharpe</th><th>最大回撤</th>
+        <th>基准胜率</th><th>基准均收益</th><th>超额收益</th>
     </tr></thead>
     <tbody>{''.join(rows_html)}</tbody>
     </table>
