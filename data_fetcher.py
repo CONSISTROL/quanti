@@ -15,10 +15,12 @@ for _proxy_var in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'al
 os.environ['NO_PROXY'] = '*'
 
 import akshare as ak
+import requests as _requests_lib
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
 import multiprocessing
+import random
 
 
 # ============================================================
@@ -103,6 +105,42 @@ def load_cache(name, cache_dir):
     return None
 
 
+def load_latest_cache(name, cache_dir, max_age_days=7):
+    """
+    加载最近的缓存文件（跨天有效）
+    适用于变化不频繁的数据（如财务报表, 每季度才更新一次）
+    max_age_days: 缓存最大有效天数, 默认7天
+    """
+    if not os.path.exists(cache_dir):
+        return None, None
+
+    # 扫描缓存目录, 找最新的匹配文件
+    prefix = f"{name}_"
+    suffix = ".pkl"
+    candidates = []
+    for f in os.listdir(cache_dir):
+        if f.startswith(prefix) and f.endswith(suffix):
+            date_str = f[len(prefix):-len(suffix)]
+            try:
+                cache_date = datetime.strptime(date_str, '%Y%m%d')
+                age = (datetime.now() - cache_date).days
+                if age <= max_age_days:
+                    candidates.append((age, date_str, f))
+            except ValueError:
+                continue
+
+    if not candidates:
+        return None, None
+
+    # 取最新的
+    candidates.sort(key=lambda x: x[0])
+    age, date_str, filename = candidates[0]
+    filepath = os.path.join(cache_dir, filename)
+    with open(filepath, 'rb') as f:
+        data = pickle.load(f)
+    return data, date_str
+
+
 # ============================================================
 # 实时行情数据 (Sina数据源)
 # ============================================================
@@ -119,6 +157,7 @@ def fetch_spot_data(cache_dir='cache', use_cache=True):
             print("  ✓ 从缓存加载实时行情")
             return cached
 
+    print(f"  正在从 Sina 获取全A股实时行情 (约5000+只, 请稍候)...")
     df = retry_api_call(lambda: ak.stock_zh_a_spot())
     if df is not None and not df.empty:
         print(f"  ✓ 获取 {len(df)} 只股票实时行情")
@@ -137,9 +176,10 @@ def fetch_financial_data(cache_dir='cache', use_cache=True):
         ROE, 毛利率, 所处行业 等
     """
     if use_cache:
-        cached = load_cache('financial', cache_dir)
+        # 财报每季度才更新一次, 跨天复用缓存 (7天内有效)
+        cached, cache_date = load_latest_cache('financial', cache_dir, max_age_days=7)
         if cached is not None:
-            print("  ✓ 从缓存加载财务数据")
+            print(f"  ✓ 从缓存加载财务数据 ({cache_date})")
             return cached
 
     now = datetime.now()
@@ -173,9 +213,10 @@ def fetch_financial_data(cache_dir='cache', use_cache=True):
 def fetch_prev_financial_data(current_period, cache_dir='cache', use_cache=True):
     """获取去年同期财报（用于计算同比增长率）"""
     if use_cache:
-        cached = load_cache('financial_prev', cache_dir)
+        # 上期财报同样是季度数据, 跨天复用
+        cached, cache_date = load_latest_cache('financial_prev', cache_dir, max_age_days=7)
         if cached is not None:
-            print("  ✓ 从缓存加载上期财务数据")
+            print(f"  ✓ 从缓存加载上期财务数据 ({cache_date})")
             return cached
 
     if not current_period or len(str(current_period)) < 8:
@@ -195,38 +236,116 @@ def fetch_prev_financial_data(current_period, cache_dir='cache', use_cache=True)
 
 
 # ============================================================
-# 个股历史K线数据 (Sina数据源)
+# 个股历史K线数据 (Sina数据源) — 优化版
 # ============================================================
 
-def fetch_single_stock_history(sina_symbol):
-    """
-    获取单只股票的历史日K线（Sina数据源, 前复权）
-    sina_symbol: Sina格式代码, 如 'sh600519', 'sz000001'
-    """
-    try:
-        df = ak.stock_zh_a_daily(symbol=sina_symbol, adjust="qfq")
-        if df is not None and not df.empty:
-            # stock_zh_a_daily 返回列: date, open, high, low, close, volume, ...
-            # 已经是英文列名，不需要重命名
-            if 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date'])
-            return df
-    except Exception:
-        pass
-    return None
+# --- 模块级全局变量 (每个 worker 进程各持有一份) ---
+_WORKER_V8 = None       # py_mini_racer V8 实例 (进程内复用, 避免每只股票重建)
+_WORKER_SESSION = None  # requests.Session (连接池复用, 减少 TCP 握手)
+_JS_DECODE = None       # Sina 行情解密 JS 脚本 (只加载一次)
 
 
-def _fetch_history_worker(sym):
+def _init_worker():
     """
-    多进程worker: 获取单只股票历史K线 (模块级函数, 可被pickle序列化)
-    py_mini_racer (V8) 不是线程安全的, 必须用多进程隔离
+    多进程 worker 初始化 (Pool initializer, 每个 worker 进程只调用一次)
+    - 创建 V8 实例并预加载解密脚本 (避免每只股票重建, 省 ~1-2s/只)
+    - 创建 requests.Session 并禁用代理 (连接池复用)
+    - 清除代理环境变量
     """
-    # 子进程也需要清除代理 (spawn模式下不继承父进程的 os.environ 修改)
+    global _WORKER_V8, _WORKER_SESSION, _JS_DECODE
+
+    # 清除代理 (spawn 模式不继承父进程的环境变量修改)
     for _pv in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY'):
         os.environ.pop(_pv, None)
     os.environ['NO_PROXY'] = '*'
 
-    df = fetch_single_stock_history(sym)
+    # V8 引擎: 每个进程一个实例, 进程内所有股票共享
+    import py_mini_racer
+    from akshare.stock.stock_zh_a_sina import hk_js_decode
+    _WORKER_V8 = py_mini_racer.MiniRacer()
+    _WORKER_V8.eval(hk_js_decode)
+    _JS_DECODE = hk_js_decode
+
+    # HTTP Session: 连接池复用, trust_env=False 绕过系统代理
+    _WORKER_SESSION = _requests_lib.Session()
+    _WORKER_SESSION.trust_env = False
+
+
+def _fast_fetch_stock_history(sina_symbol):
+    """
+    快速获取单只股票历史K线 (优化版, 替代 ak.stock_zh_a_daily)
+
+    优化点:
+    1. 复用 V8 实例 — 省去每只股票 ~1-2s 的 V8 初始化
+    2. 跳过 share amount 请求 — 省 1 次 HTTP (我们不需要流通股本/换手率)
+    3. Session 连接池 — 复用 TCP 连接, 减少握手开销
+    4. HTTP 超时 15s — 防止请求无限挂起
+
+    返回: DataFrame (date, open, high, low, close, volume) 或 None
+    """
+    from akshare.stock.stock_zh_a_sina import (
+        zh_sina_a_stock_hist_url, zh_sina_a_stock_qfq_url
+    )
+
+    session = _WORKER_SESSION
+    try:
+        # --- 请求 1/2: 获取加密K线数据, 用 V8 解密 ---
+        r = session.get(zh_sina_a_stock_hist_url.format(sina_symbol), timeout=15)
+        dict_list = _WORKER_V8.call(
+            "d", r.text.split("=")[1].split(";")[0].replace('"', "")
+        )
+        data_df = pd.DataFrame(dict_list)
+        data_df.index = pd.to_datetime(data_df["date"], errors="coerce").dt.date
+        del data_df["date"]
+        for col in ("prevclose", "postVol", "postAmt"):
+            if col in data_df.columns:
+                del data_df[col]
+        data_df = data_df.astype("float")
+
+        # --- 请求 2/2: 获取前复权因子并应用 ---
+        r2 = session.get(zh_sina_a_stock_qfq_url.format(sina_symbol), timeout=15)
+        qfq_factor_df = pd.DataFrame(
+            eval(r2.text.split("=")[1].split("\n")[0])["data"]
+        )
+        if qfq_factor_df.shape[0] > 0:
+            qfq_factor_df.columns = ["date", "qfq_factor"]
+            qfq_factor_df["qfq_factor"] = qfq_factor_df["qfq_factor"].astype(float)
+            qfq_factor_df.index = pd.to_datetime(qfq_factor_df.date)
+            del qfq_factor_df["date"]
+            temp_df = pd.merge(
+                data_df, qfq_factor_df,
+                left_index=True, right_index=True, how="left"
+            )
+            temp_df = temp_df.ffill()
+            for col in ("open", "high", "close", "low"):
+                temp_df[col] = temp_df[col] / temp_df["qfq_factor"]
+            temp_df = temp_df.drop(columns=["qfq_factor"])
+            data_df = temp_df
+
+        data_df = data_df.reset_index()
+        # reset_index 可能生成 'index' 列 (日期索引无名时)
+        if "date" not in data_df.columns and "index" in data_df.columns:
+            data_df = data_df.rename(columns={"index": "date"})
+        if 'date' in data_df.columns:
+            data_df['date'] = pd.to_datetime(data_df['date'])
+        return data_df
+
+    except Exception:
+        return None
+
+
+def _fetch_history_worker(args):
+    """
+    多进程worker: 获取单只股票历史K线
+    V8 和 Session 由 _init_worker 初始化, 进程内复用
+    args: (sym, sleep_time) 元组
+    """
+    sym, sleep_time = args
+
+    if sleep_time > 0:
+        time.sleep(sleep_time * random.uniform(0.5, 1.5))
+
+    df = _fast_fetch_stock_history(sym)
     if df is not None and len(df) >= 30:
         return (sym, df.tail(300).reset_index(drop=True))
     return (sym, None)
@@ -235,13 +354,16 @@ def _fetch_history_worker(sym):
 def fetch_history_batch(symbols, cache_dir='cache', sleep_time=0.15,
                         use_cache=True, workers=5):
     """
-    批量获取个股历史K线数据 (多进程并发)
+    批量获取个股历史K线数据 (多进程并发, V8 进程内复用)
     symbols: Sina格式代码列表 (如 ['sh600519', 'sz000001', ...])
-    workers: 并发进程数 (默认5)
+    workers: 并发进程数 (默认8)
     返回: {sina_symbol: DataFrame, ...}
 
-    注意: 使用多进程而非多线程, 因为 AkShare 内部的 py_mini_racer (V8)
-    不是线程安全的, 多线程会导致 V8 引擎崩溃
+    优化策略:
+    - 每个 worker 进程持有独立的 V8 实例 + HTTP Session (Pool initializer)
+    - V8 不再每只股票重建, 省 ~1-2s/只
+    - 跳过不需要的 share amount 请求, 省 1 次 HTTP/只
+    - Session 连接池复用 TCP 连接
     """
     # 加载已有缓存
     hist_cache = {}
@@ -258,20 +380,23 @@ def fetch_history_batch(symbols, cache_dir='cache', sleep_time=0.15,
     to_fetch = [s for s in symbols if s not in hist_cache]
 
     if to_fetch:
-        est_time = len(to_fetch) * 0.6 / workers / 60  # 估算: 0.6s/stock with processes
+        workers = min(workers, 10)  # 上限 10, 避免触发 Sina IP 封禁
+        est_time = len(to_fetch) * 0.3 / workers / 60  # 优化后约 0.3s/stock
         print(f"  需要获取 {len(to_fetch)} 只股票的历史K线 "
               f"(并发{workers}进程, 约{est_time:.0f}分钟)...")
+
+        # 构造 (sym, sleep_time) 元组列表
+        fetch_args = [(s, sleep_time) for s in to_fetch]
 
         success_count = 0
         fail_count = 0
         save_interval = max(100, len(to_fetch) // 5)  # 每20%保存一次
 
-        # 使用多进程: 每个进程有独立的 V8 实例, 避免 py_mini_racer 线程安全问题
-        # spawn 模式确保子进程是全新的 Python 解释器, 不会继承父进程的 V8 状态
+        # 多进程 + initializer: V8 和 Session 在 worker 启动时创建一次
         ctx = multiprocessing.get_context('spawn')
-        with ctx.Pool(processes=workers) as pool:
+        with ctx.Pool(processes=workers, initializer=_init_worker) as pool:
             with tqdm(total=len(to_fetch), desc="历史数据", ncols=80) as pbar:
-                for sym, df in pool.imap_unordered(_fetch_history_worker, to_fetch):
+                for sym, df in pool.imap_unordered(_fetch_history_worker, fetch_args):
                     if df is not None:
                         hist_cache[sym] = df
                         success_count += 1

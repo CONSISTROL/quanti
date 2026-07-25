@@ -52,8 +52,8 @@ def parse_args():
                         help='不使用缓存，强制重新获取数据')
     parser.add_argument('--no_history', action='store_true',
                         help='跳过历史K线获取 (快速模式: 仅价值+成长+质量因子)')
-    parser.add_argument('--workers', type=int, default=5,
-                        help='历史数据并发线程数 (默认: 5, 不宜超过5)')
+    parser.add_argument('--workers', type=int, default=8,
+                        help='历史数据并发进程数 (默认: 8, 上限10)')
     parser.add_argument('--sleep', type=float, default=0.15,
                         help='API请求间隔秒数 (默认: 0.15)')
     parser.add_argument('--cache_dir', type=str, default='cache',
