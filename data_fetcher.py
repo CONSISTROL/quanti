@@ -18,6 +18,7 @@ import akshare as ak
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
+import multiprocessing
 
 
 # ============================================================
@@ -215,16 +216,33 @@ def fetch_single_stock_history(sina_symbol):
     return None
 
 
+def _fetch_history_worker(sym):
+    """
+    多进程worker: 获取单只股票历史K线 (模块级函数, 可被pickle序列化)
+    py_mini_racer (V8) 不是线程安全的, 必须用多进程隔离
+    """
+    # 子进程也需要清除代理 (spawn模式下不继承父进程的 os.environ 修改)
+    for _pv in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY'):
+        os.environ.pop(_pv, None)
+    os.environ['NO_PROXY'] = '*'
+
+    df = fetch_single_stock_history(sym)
+    if df is not None and len(df) >= 30:
+        return (sym, df.tail(300).reset_index(drop=True))
+    return (sym, None)
+
+
 def fetch_history_batch(symbols, cache_dir='cache', sleep_time=0.15,
                         use_cache=True, workers=5):
     """
-    批量获取个股历史K线数据 (多线程并发)
+    批量获取个股历史K线数据 (多进程并发)
     symbols: Sina格式代码列表 (如 ['sh600519', 'sz000001', ...])
-    workers: 并发线程数 (默认5, 不宜超过5以避免akshare内存崩溃)
+    workers: 并发进程数 (默认5)
     返回: {sina_symbol: DataFrame, ...}
-    """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    注意: 使用多进程而非多线程, 因为 AkShare 内部的 py_mini_racer (V8)
+    不是线程安全的, 多线程会导致 V8 引擎崩溃
+    """
     # 加载已有缓存
     hist_cache = {}
     if use_cache:
@@ -240,26 +258,20 @@ def fetch_history_batch(symbols, cache_dir='cache', sleep_time=0.15,
     to_fetch = [s for s in symbols if s not in hist_cache]
 
     if to_fetch:
-        est_time = len(to_fetch) * 0.6 / workers / 60  # 估算: 0.6s/stock with threads
+        est_time = len(to_fetch) * 0.6 / workers / 60  # 估算: 0.6s/stock with processes
         print(f"  需要获取 {len(to_fetch)} 只股票的历史K线 "
-              f"(并发{workers}线程, 约{est_time:.0f}分钟)...")
-
-        def _fetch_worker(sym):
-            df = fetch_single_stock_history(sym)
-            if df is not None and len(df) >= 30:
-                return (sym, df.tail(300).reset_index(drop=True))
-            return (sym, None)
+              f"(并发{workers}进程, 约{est_time:.0f}分钟)...")
 
         success_count = 0
         fail_count = 0
         save_interval = max(100, len(to_fetch) // 5)  # 每20%保存一次
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(_fetch_worker, s): s for s in to_fetch}
-
+        # 使用多进程: 每个进程有独立的 V8 实例, 避免 py_mini_racer 线程安全问题
+        # spawn 模式确保子进程是全新的 Python 解释器, 不会继承父进程的 V8 状态
+        ctx = multiprocessing.get_context('spawn')
+        with ctx.Pool(processes=workers) as pool:
             with tqdm(total=len(to_fetch), desc="历史数据", ncols=80) as pbar:
-                for future in as_completed(futures):
-                    sym, df = future.result()
+                for sym, df in pool.imap_unordered(_fetch_history_worker, to_fetch):
                     if df is not None:
                         hist_cache[sym] = df
                         success_count += 1
