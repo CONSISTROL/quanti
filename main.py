@@ -20,11 +20,48 @@ A股多因子量化选股系统 v3.0
 import argparse
 import sys
 import os
+import json
 from datetime import datetime
 
 
-def parse_args():
-    """解析命令行参数"""
+def load_config():
+    """
+    从 config.json 加载配置
+
+    优先级: 命令行参数 > config.json > 默认值
+    config.json 中的 ai 配置会自动写入环境变量
+    """
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+    if not os.path.exists(config_path):
+        return {}
+
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except Exception as e:
+        print(f"  ⚠ 读取 config.json 失败: {e}")
+        return {}
+
+    # AI 配置 → 环境变量 (供 backtest.py 读取)
+    ai = config.get('ai', {})
+    if ai.get('api_key'):
+        os.environ.setdefault('ANTHROPIC_AUTH_TOKEN', ai['api_key'])
+    if ai.get('base_url'):
+        os.environ.setdefault('ANTHROPIC_BASE_URL', ai['base_url'])
+    if ai.get('model'):
+        os.environ.setdefault('ANTHROPIC_MODEL', ai['model'])
+
+    return config
+
+
+def parse_args(config=None):
+    """解析命令行参数 (config.json 的值作为默认值)"""
+    if config is None:
+        config = {}
+
+    bt_cfg = config.get('backtest', {})
+    sc_cfg = config.get('scoring', {})
+    dt_cfg = config.get('data', {})
     parser = argparse.ArgumentParser(
         description='A股多因子量化选股系统 v3.0',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -46,12 +83,12 @@ def parse_args():
     )
 
     # ---- 基础参数 ----
-    parser.add_argument('--top', type=int, default=30,
-                        help='展示前N只证券 (默认: 30)')
-    parser.add_argument('--min_score', type=float, default=0,
-                        help='最低综合得分 (默认: 0, 不设门槛)')
-    parser.add_argument('--weights', type=str, default='0.25,0.20,0.25,0.20,0.10',
-                        help='因子权重: 价值,成长,质量,动量,风险 (默认: 0.25,0.20,0.25,0.20,0.10)')
+    parser.add_argument('--top', type=int, default=sc_cfg.get('top', 30),
+                        help=f'展示前N只证券 (默认: {sc_cfg.get("top", 30)})')
+    parser.add_argument('--min_score', type=float, default=sc_cfg.get('min_score', 0),
+                        help=f'最低综合得分 (默认: {sc_cfg.get("min_score", 0)})')
+    parser.add_argument('--weights', type=str, default=sc_cfg.get('weights', '0.25,0.20,0.25,0.20,0.10'),
+                        help=f'因子权重 (默认: {sc_cfg.get("weights", "0.25,0.20,0.25,0.20,0.10")})')
     parser.add_argument('--output', type=str, default=None,
                         help='HTML报告输出路径 (默认: report_YYYYMMDD.html)')
     parser.add_argument('--no_html', action='store_true',
@@ -60,34 +97,52 @@ def parse_args():
                         help='不使用缓存，强制重新获取数据')
     parser.add_argument('--no_history', action='store_true',
                         help='跳过历史K线获取 (快速模式: 仅价值+成长+质量因子)')
-    parser.add_argument('--workers', type=int, default=8,
-                        help='历史数据并发进程数 (默认: 8, 上限10)')
-    parser.add_argument('--sleep', type=float, default=0.15,
-                        help='API请求间隔秒数 (默认: 0.15)')
+    parser.add_argument('--workers', type=int, default=dt_cfg.get('workers', 8),
+                        help=f'历史数据并发进程数 (默认: {dt_cfg.get("workers", 8)})')
+    parser.add_argument('--sleep', type=float, default=dt_cfg.get('sleep', 0.15),
+                        help=f'API请求间隔秒数 (默认: {dt_cfg.get("sleep", 0.15)})')
     parser.add_argument('--cache_dir', type=str, default='cache',
                         help='缓存目录 (默认: cache)')
 
-    # ---- 新增: ETF/LOF ----
+    # ---- ETF/LOF ----
     parser.add_argument('--include_etf_lof', action='store_true',
-                        help='将ETF和LOF纳入选股池 (默认: 仅个股)')
+                        default=dt_cfg.get('include_etf_lof', False),
+                        help='将ETF和LOF纳入选股池')
 
-    # ---- 新增: 买卖参考价 ----
+    # ---- 买卖参考价 ----
     parser.add_argument('--price_targets', action='store_true',
                         help='计算买卖参考价 (基于估值分位数+技术面)')
 
-    # ---- 新增: 回测 ----
+    # ---- 回测 ----
     parser.add_argument('--backtest', action='store_true',
                         help='运行策略回测 (Walk-forward)')
-    parser.add_argument('--backtest_top', type=int, default=30,
-                        help='回测每周期选股数 (默认: 30)')
-    parser.add_argument('--backtest_periods', type=str, default='5,10,20,60',
-                        help='回测持有周期,逗号分隔 (默认: 5,10,20,60)')
-    parser.add_argument('--backtest_rebalance', type=int, default=60,
-                        help='回测再平衡间隔天数 (默认: 60)')
+    parser.add_argument('--backtest_top', type=int, default=bt_cfg.get('top_n', 30),
+                        help=f'回测每周期选股数 (默认: {bt_cfg.get("top_n", 30)})')
+    parser.add_argument('--backtest_periods', type=str,
+                        default=bt_cfg.get('holding_periods', '5,10,20,60'),
+                        help=f'回测持有周期 (默认: {bt_cfg.get("holding_periods", "5,10,20,60")})')
+    parser.add_argument('--backtest_rebalance', type=int,
+                        default=bt_cfg.get('rebalance_days', 60),
+                        help=f'回测再平衡间隔天数 (默认: {bt_cfg.get("rebalance_days", 60)})')
+    parser.add_argument('--strategy', type=str,
+                        default=bt_cfg.get('strategy', 'composite'),
+                        choices=['momentum', 'reversion', 'trend', 'low_vol', 'composite'],
+                        help=f'回测策略 (默认: {bt_cfg.get("strategy", "composite")})')
+    parser.add_argument('--compare_strategies', action='store_true',
+                        help='运行全部内置策略并对比')
+    parser.add_argument('--no_regime_filter', action='store_true',
+                        default=not bt_cfg.get('use_regime_filter', True),
+                        help='关闭市场趋势过滤')
+    parser.add_argument('--ai_key', type=str, default=None,
+                        help='AI API Key (也可在config.json中配置)')
 
-    # ---- 新增: 历史数据天数 ----
-    parser.add_argument('--hist_days', type=int, default=300,
-                        help='历史K线天数, 估值/回测需要更长 (默认: 300)')
+    # ---- 历史数据天数 ----
+    parser.add_argument('--hist_days', type=int, default=dt_cfg.get('hist_days', 300),
+                        help=f'历史K线天数 (默认: {dt_cfg.get("hist_days", 300)})')
+
+    # ---- 指定日期回测 ----
+    parser.add_argument('--backtest_date', type=str, default=None,
+                        help='模拟指定日期的选股推荐 (格式: YYYY-MM-DD 或 YYYYMMDD)')
 
     return parser.parse_args()
 
@@ -127,8 +182,175 @@ def validate_weights(weight_str, no_history=False):
         sys.exit(1)
 
 
+def _run_backtest_date(args, data, weights, scored_df):
+    """
+    模拟指定日期的选股推荐，并验证前瞻收益
+
+    逻辑:
+    1. 将所有K线截断到指定日期
+    2. 重新计算动量/风险因子
+    3. 重新打分排名
+    4. 显示TOP N推荐
+    5. 计算实际前瞻收益（验证推荐是否靠谱）
+    """
+    import numpy as np
+    import pandas as pd
+    from datetime import datetime as dt_cls
+
+    # 解析日期
+    date_str = args.backtest_date.replace('-', '').replace('/', '')
+    try:
+        target_date = dt_cls.strptime(date_str, '%Y%m%d')
+    except ValueError:
+        print(f"  ✗ 日期格式错误: {args.backtest_date}，请使用 YYYY-MM-DD 或 YYYYMMDD")
+        return
+
+    target_ts = pd.Timestamp(target_date)
+    history_dict = data['history']
+
+    if not history_dict:
+        print(f"  ✗ 无历史K线数据")
+        return
+
+    print("\n" + "━" * 52)
+    print(f"  🕰️  模拟选股: 假如今天是 {target_date.strftime('%Y-%m-%d')}")
+    print("━" * 52)
+
+    # ---- 截断K线到指定日期 ----
+    truncated = {}
+    for sina_code, hist in history_dict.items():
+        if hist is None or 'date' not in hist.columns:
+            continue
+        mask = hist['date'] <= target_ts
+        sub = hist[mask]
+        if len(sub) >= 30:
+            truncated[sina_code] = sub
+
+    print(f"  截断到 {target_date.strftime('%Y-%m-%d')} 后有 {len(truncated)} 只证券有足够数据")
+
+    if len(truncated) < args.top:
+        print(f"  ✗ 数据不足")
+        return
+
+    # ---- 重新计算因子 ----
+    from factor_model import calculate_all_factors, score_stocks
+
+    factor_df_sim = calculate_all_factors(
+        spot_filtered=data['spot_filtered'],
+        financial_df=data['financial'],
+        financial_prev_df=data['financial_prev'],
+        history_dict=truncated,
+        sector_map=data.get('sector_map', {}),
+        asset_type_map=data.get('asset_type_map', {}),
+    )
+
+    scored_sim = score_stocks(factor_df_sim, weights)
+    top_picks = scored_sim.head(args.top)
+
+    # ---- 显示推荐列表 ----
+    print(f"\n  📋 {target_date.strftime('%Y-%m-%d')} 推荐买入 TOP {args.top}:\n")
+    print(f"  {'排名':>4}  {'代码':<8} {'名称':<10} {'现价':>8} {'综合分':>7} "
+          f"{'动量':>6} {'风险':>6} {'5日后':>8} {'10日后':>8} {'20日后':>8} {'60日后':>8}")
+    print("  " + "─" * 95)
+
+    # ---- 计算前瞻收益（验证推荐） ----
+    for i, (_, row) in enumerate(top_picks.iterrows()):
+        code = str(row.get('code', '')).zfill(6)
+        name = str(row.get('name', ''))
+        score = row.get('composite_score', 0)
+
+        mom = row.get('momentum_score', np.nan)
+        risk = row.get('risk_score', np.nan)
+
+        # 找到这只股票的完整K线，算前瞻收益
+        sina_code = None
+        for s in history_dict:
+            pure = s[2:] if s[:2] in ('sh', 'sz', 'bj') else s
+            if pure == code:
+                sina_code = s
+                break
+
+        fwd = {}
+        price_at_date = np.nan
+        if sina_code and sina_code in history_dict:
+            full_hist = history_dict[sina_code]
+            if 'date' in full_hist.columns and 'close' in full_hist.columns:
+                closes = full_hist['close'].values
+                dates = full_hist['date'].values
+                # 找到指定日期的索引
+                mask = full_hist['date'] <= target_ts
+                if mask.sum() > 0:
+                    buy_idx = mask.sum() - 1
+                    price_at_date = closes[buy_idx]
+
+                    for days in [5, 10, 20, 60]:
+                        sell_idx = buy_idx + days
+                        if sell_idx < len(closes):
+                            fwd[days] = (closes[sell_idx] / price_at_date - 1)
+
+        def _fmt_fwd(d):
+            v = fwd.get(d)
+            if v is None:
+                return '  -'
+            css = '+' if v >= 0 else ''
+            return f'{css}{v:.2%}'
+
+        def _fmt_score(v):
+            return f'{v:>6.2f}' if pd.notna(v) else '     -'
+
+        price_str = f'{price_at_date:>8.2f}' if not np.isnan(price_at_date) else '       -'
+
+        print(f"  {i+1:>4}  {code:<8} {name:<10} {price_str} {score:>7.2f} "
+              f"{_fmt_score(mom)} {_fmt_score(risk)} "
+              f"{_fmt_fwd(5):>8} {_fmt_fwd(10):>8} {_fmt_fwd(20):>8} {_fmt_fwd(60):>8}")
+
+    # ---- 汇总统计 ----
+    print("  " + "─" * 95)
+
+    for days in [5, 10, 20, 60]:
+        rets = []
+        for _, row in top_picks.iterrows():
+            code = str(row.get('code', '')).zfill(6)
+            sina_code = None
+            for s in history_dict:
+                pure = s[2:] if s[:2] in ('sh', 'sz', 'bj') else s
+                if pure == code:
+                    sina_code = s
+                    break
+            if sina_code and sina_code in history_dict:
+                full_hist = history_dict[sina_code]
+                closes = full_hist['close'].values
+                mask = full_hist['date'] <= target_ts
+                if mask.sum() > 0:
+                    buy_idx = mask.sum() - 1
+                    sell_idx = buy_idx + days
+                    if sell_idx < len(closes) and closes[buy_idx] > 0:
+                        rets.append(closes[sell_idx] / closes[buy_idx] - 1)
+
+        if rets:
+            avg = np.mean(rets)
+            wr = sum(1 for r in rets if r > 0) / len(rets)
+            print(f"  {days:>2}日后汇总: 平均收益 {avg:+.2%} | 胜率 {wr:.0%} ({sum(1 for r in rets if r > 0)}/{len(rets)})")
+
+    print(f"\n  ⚠️  以上基于历史数据模拟，不构成投资建议。")
+    print()
+
+
 def main():
-    args = parse_args()
+    config = load_config()
+    args = parse_args(config)
+
+    # 回测、买卖参考价、指定日期选股 都需要历史数据
+    needs_history = args.backtest or args.price_targets or args.backtest_date
+    if needs_history:
+        if args.no_history:
+            print("  ⚠ --backtest/--price_targets/--backtest_date 需要历史K线，已自动关闭 --no_history")
+            args.no_history = False
+        # 回测/估值需要更长的历史
+        if args.hist_days < 500:
+            args.hist_days = 1200
+            print(f"  ⚠ 已自动将历史天数调整为 {args.hist_days} 天")
+
     weights = validate_weights(args.weights, args.no_history)
 
     # 解析回测周期
@@ -145,7 +367,12 @@ def main():
     if args.price_targets:
         features.append('买卖参考价')
     if args.backtest:
-        features.append('策略回测')
+        if args.compare_strategies:
+            features.append('多策略对比')
+        else:
+            from backtest import STRATEGIES
+            s_label = STRATEGIES.get(args.strategy, {}).get('label', args.strategy)
+            features.append(f'回测({s_label})')
     features_str = ' + '.join(features) if features else '仅个股'
 
     mode = "快速 (3因子)" if args.no_history else "完整 (5因子)"
@@ -153,6 +380,11 @@ def main():
     print("║       A股多因子量化选股系统 v3.0                 ║")
     print("╚══════════════════════════════════════════════════╝")
     print(f"  运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if config:
+        ai_cfg = config.get('ai', {})
+        has_ai = bool(ai_cfg.get('api_key'))
+        model_name = ai_cfg.get('model', '-')
+        print(f"  配置: config.json ✓ | AI: {'✓ ' + model_name if has_ai else '✗'}")
     print(f"  模式: {mode} | TOP={args.top} | 功能: {features_str}")
     print(f"  权重: 价值{weights['value']:.0%} / 成长{weights['growth']:.0%} / "
           f"质量{weights['quality']:.0%} / 动量{weights['momentum']:.0%} / "
@@ -209,6 +441,12 @@ def main():
         print(f"\n  ✅ 打分完成")
 
         # ================================================================
+        # 阶段3.2: 指定日期选股 (可选)
+        # ================================================================
+        if args.backtest_date:
+            _run_backtest_date(args, data, weights, scored_df)
+
+        # ================================================================
         # 阶段3.5: 买卖参考价 (可选)
         # ================================================================
         phase_idx = 4
@@ -246,31 +484,84 @@ def main():
         # ================================================================
         # 阶段3.8: 策略回测 (可选)
         # ================================================================
+        comparison_results = None
+
         if args.backtest:
-            from backtest import run_backtest, print_backtest_summary
+            if args.compare_strategies:
+                # ---- 多策略对比模式 ----
+                from backtest import (run_strategy_comparison,
+                                     print_strategy_comparison,
+                                     ai_analyze_strategy,
+                                     print_backtest_summary,
+                                     STRATEGIES)
 
-            print("\n" + "━" * 52)
-            print(f"  🔬 阶段 {phase_idx}/{total_phases}: 策略回测")
-            print("━" * 52)
+                print("\n" + "━" * 52)
+                print(f"  🏆 阶段 {phase_idx}/{total_phases}: 多策略对比回测")
+                print("━" * 52)
 
-            backtest_result = run_backtest(
-                scored_df=scored_df,
-                history_dict=data['history'],
-                financial_df=data['financial'],
-                financial_prev_df=data['financial_prev'],
-                sector_map=data.get('sector_map', {}),
-                weights=weights,
-                top_n=args.backtest_top,
-                rebalance_days=args.backtest_rebalance,
-                holding_periods=backtest_periods,
-                asset_type_map=data.get('asset_type_map', {}),
-            )
+                comparison_results = run_strategy_comparison(
+                    scored_df=scored_df,
+                    history_dict=data['history'],
+                    financial_df=data['financial'],
+                    financial_prev_df=data['financial_prev'],
+                    sector_map=data.get('sector_map', {}),
+                    weights=weights,
+                    top_n=args.backtest_top,
+                    rebalance_days=args.backtest_rebalance,
+                    holding_periods=backtest_periods,
+                    asset_type_map=data.get('asset_type_map', {}),
+                )
 
-            # 终端输出回测结果
-            if backtest_result.n_rebalances > 0:
-                print_backtest_summary(backtest_result)
+                best = print_strategy_comparison(comparison_results, backtest_periods)
+
+                # 用最佳策略作为报告展示
+                if best and best in comparison_results:
+                    backtest_result = comparison_results[best]
+
+                # AI策略分析
+                import os as _os
+                has_ai_key = args.ai_key or _os.environ.get('ANTHROPIC_API_KEY') or _os.environ.get('ANTHROPIC_AUTH_TOKEN')
+                if has_ai_key:
+                    print("\n  🤖 AI策略分析中...")
+                    ai_result = ai_analyze_strategy(
+                        comparison_results, api_key=args.ai_key,
+                        holding_periods=backtest_periods,
+                    )
+                    if ai_result:
+                        print("\n" + "═" * 70)
+                        print("  🤖 AI 策略优化建议")
+                        print("═" * 70)
+                        print(ai_result)
+                        print()
+
             else:
-                print(f"\n  ⚠ 回测数据不足，无法生成有效结果")
+                # ---- 单策略模式 ----
+                from backtest import run_backtest, print_backtest_summary, STRATEGIES
+
+                strategy_label = STRATEGIES.get(args.strategy, {}).get('label', args.strategy)
+                print("\n" + "━" * 52)
+                print(f"  🔬 阶段 {phase_idx}/{total_phases}: 策略回测 ({strategy_label})")
+                print("━" * 52)
+
+                backtest_result = run_backtest(
+                    scored_df=scored_df,
+                    history_dict=data['history'],
+                    financial_df=data['financial'],
+                    financial_prev_df=data['financial_prev'],
+                    sector_map=data.get('sector_map', {}),
+                    weights=weights,
+                    top_n=args.backtest_top,
+                    rebalance_days=args.backtest_rebalance,
+                    holding_periods=backtest_periods,
+                    asset_type_map=data.get('asset_type_map', {}),
+                    strategy=args.strategy,
+                    use_regime_filter=not args.no_regime_filter,
+                )
+
+                if backtest_result.n_rebalances > 0:
+                    print_backtest_summary(backtest_result)
+                else:
+                    print(f"\n  ⚠ 回测数据不足，无法生成有效结果")
 
             phase_idx += 1
 

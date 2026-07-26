@@ -8,6 +8,9 @@ build/
 # Cache
 cache/
 
+# Config (contains API keys)
+config.json
+
 # Reports
 report_*.html
 选股结果*.csv
