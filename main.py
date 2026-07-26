@@ -245,8 +245,8 @@ def _run_backtest_date(args, data, weights, scored_df):
     # ---- 显示推荐列表 ----
     print(f"\n  📋 {target_date.strftime('%Y-%m-%d')} 推荐买入 TOP {args.top}:\n")
     print(f"  {'排名':>4}  {'代码':<8} {'名称':<10} {'现价':>8} {'综合分':>7} "
-          f"{'动量':>6} {'风险':>6} {'5日后':>8} {'10日后':>8} {'20日后':>8} {'60日后':>8}")
-    print("  " + "─" * 95)
+          f"{'动量':>6} {'风险':>6} {'5日后':>8} {'10日后':>8} {'20日后':>8} {'60日后':>8} {'至今':>8}")
+    print("  " + "─" * 105)
 
     # ---- 计算前瞻收益（验证推荐） ----
     stock_details = []
@@ -284,6 +284,12 @@ def _run_backtest_date(args, data, weights, scored_df):
                         if sell_idx < len(closes):
                             fwd[days] = (closes[sell_idx] / price_at_date - 1)
 
+                    # 至今收益: 最后一个交易日
+                    last_idx = len(closes) - 1
+                    if last_idx > buy_idx:
+                        fwd['today'] = (closes[last_idx] / price_at_date - 1)
+                        fwd['today_days'] = last_idx - buy_idx  # 交易日天数
+
         def _fmt_fwd(d):
             v = fwd.get(d)
             if v is None:
@@ -298,7 +304,7 @@ def _run_backtest_date(args, data, weights, scored_df):
 
         print(f"  {i+1:>4}  {code:<8} {name:<10} {price_str} {score:>7.2f} "
               f"{_fmt_score(mom)} {_fmt_score(risk)} "
-              f"{_fmt_fwd(5):>8} {_fmt_fwd(10):>8} {_fmt_fwd(20):>8} {_fmt_fwd(60):>8}")
+              f"{_fmt_fwd(5):>8} {_fmt_fwd(10):>8} {_fmt_fwd(20):>8} {_fmt_fwd(60):>8} {_fmt_fwd('today'):>8}")
 
         stock_details.append({
             'rank': i + 1,
@@ -310,11 +316,14 @@ def _run_backtest_date(args, data, weights, scored_df):
             'fwd_10': fwd.get(10),
             'fwd_20': fwd.get(20),
             'fwd_60': fwd.get(60),
+            'fwd_today': fwd.get('today'),
+            'today_days': fwd.get('today_days'),
         })
 
     # ---- 汇总统计 ----
-    print("  " + "─" * 95)
+    print("  " + "─" * 105)
 
+    today_days_count = None
     fwd_summary = []
     for days in [5, 10, 20, 60]:
         rets = []
@@ -348,6 +357,29 @@ def _run_backtest_date(args, data, weights, scored_df):
                 'win_count': win_n,
                 'total_count': len(rets),
             })
+
+    # 至今汇总
+    today_rets = []
+    for detail in stock_details:
+        if detail.get('fwd_today') is not None:
+            today_rets.append(detail['fwd_today'])
+            if today_days_count is None and detail.get('today_days') is not None:
+                today_days_count = detail['today_days']
+
+    if today_rets:
+        avg = np.mean(today_rets)
+        wr = sum(1 for r in today_rets if r > 0) / len(today_rets)
+        win_n = sum(1 for r in today_rets if r > 0)
+        days_label = f"至今({today_days_count}日)" if today_days_count else "至今"
+        print(f"  {days_label:>10}汇总: 平均收益 {avg:+.2%} | 胜率 {wr:.0%} ({win_n}/{len(today_rets)})")
+        fwd_summary.append({
+            'days': today_days_count or 0,
+            'label': days_label,
+            'avg_return': avg,
+            'win_rate': wr,
+            'win_count': win_n,
+            'total_count': len(today_rets),
+        })
 
     print(f"\n  ⚠️  以上基于历史数据模拟，不构成投资建议。")
     print()

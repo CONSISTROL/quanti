@@ -333,8 +333,13 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 tag = '<span style="background:#3498db;color:white;padding:2px 8px;border-radius:10px;font-size:11px;">一般</span>'
             else:
                 tag = '<span style="background:#e74c3c;color:white;padding:2px 8px;border-radius:10px;font-size:11px;">较差</span>'
+            # 显示持有天数标签
+            if 'label' in item:
+                days_text = item['label']
+            else:
+                days_text = f"{item['days']}日"
             html_parts.append(f"""<tr>
-                <td><strong>{item['days']}日</strong></td>
+                <td><strong>{days_text}</strong></td>
                 <td style="{avg_css}">{avg:+.2%}</td>
                 <td style="{wr_css}">{wr:.0%}</td>
                 <td>{item['win_count']}/{item['total_count']}</td>
@@ -347,12 +352,22 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
 
     # === 个股前瞻收益明细表 ===
     if stock_details:
-        html_parts.append("""
+        # 获取至今天数（从第一条记录取）
+        today_days_label = ''
+        for s in stock_details:
+            td = s.get('today_days')
+            if td is not None:
+                today_days_label = f'至今({td}日)'
+                break
+        if not today_days_label:
+            today_days_label = '至今'
+
+        html_parts.append(f"""
     <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 个股前瞻收益明细</h2>
     <table style="margin-bottom:20px;">
     <thead><tr>
         <th>排名</th><th>代码</th><th>名称</th><th>买入价</th>
-        <th>5日后</th><th>10日后</th><th>20日后</th><th>60日后</th>
+        <th>5日后</th><th>10日后</th><th>20日后</th><th>60日后</th><th>{today_days_label}</th>
     </tr></thead>
     <tbody>""")
         for s in stock_details:
@@ -369,6 +384,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 <td>{s['price']:.2f}</td>
                 {_fwd_cell(s.get('fwd_5'))}{_fwd_cell(s.get('fwd_10'))}
                 {_fwd_cell(s.get('fwd_20'))}{_fwd_cell(s.get('fwd_60'))}
+                {_fwd_cell(s.get('fwd_today'))}
             </tr>""")
         html_parts.append("</tbody></table>")
 
