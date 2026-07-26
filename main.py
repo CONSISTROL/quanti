@@ -186,12 +186,7 @@ def _run_backtest_date(args, data, weights, scored_df):
     """
     模拟指定日期的选股推荐，并验证前瞻收益
 
-    逻辑:
-    1. 将所有K线截断到指定日期
-    2. 重新计算动量/风险因子
-    3. 重新打分排名
-    4. 显示TOP N推荐
-    5. 计算实际前瞻收益（验证推荐是否靠谱）
+    返回: (simulated_scored_df, target_date) 或 (None, None)
     """
     import numpy as np
     import pandas as pd
@@ -203,14 +198,14 @@ def _run_backtest_date(args, data, weights, scored_df):
         target_date = dt_cls.strptime(date_str, '%Y%m%d')
     except ValueError:
         print(f"  ✗ 日期格式错误: {args.backtest_date}，请使用 YYYY-MM-DD 或 YYYYMMDD")
-        return
+        return None, None, None, None
 
     target_ts = pd.Timestamp(target_date)
     history_dict = data['history']
 
     if not history_dict:
         print(f"  ✗ 无历史K线数据")
-        return
+        return None, None, None, None
 
     print("\n" + "━" * 52)
     print(f"  🕰️  模拟选股: 假如今天是 {target_date.strftime('%Y-%m-%d')}")
@@ -230,7 +225,7 @@ def _run_backtest_date(args, data, weights, scored_df):
 
     if len(truncated) < args.top:
         print(f"  ✗ 数据不足")
-        return
+        return None, None, None, None
 
     # ---- 重新计算因子 ----
     from factor_model import calculate_all_factors, score_stocks
@@ -254,6 +249,7 @@ def _run_backtest_date(args, data, weights, scored_df):
     print("  " + "─" * 95)
 
     # ---- 计算前瞻收益（验证推荐） ----
+    stock_details = []
     for i, (_, row) in enumerate(top_picks.iterrows()):
         code = str(row.get('code', '')).zfill(6)
         name = str(row.get('name', ''))
@@ -304,9 +300,22 @@ def _run_backtest_date(args, data, weights, scored_df):
               f"{_fmt_score(mom)} {_fmt_score(risk)} "
               f"{_fmt_fwd(5):>8} {_fmt_fwd(10):>8} {_fmt_fwd(20):>8} {_fmt_fwd(60):>8}")
 
+        stock_details.append({
+            'rank': i + 1,
+            'code': code,
+            'name': name,
+            'price': price_at_date,
+            'score': score,
+            'fwd_5': fwd.get(5),
+            'fwd_10': fwd.get(10),
+            'fwd_20': fwd.get(20),
+            'fwd_60': fwd.get(60),
+        })
+
     # ---- 汇总统计 ----
     print("  " + "─" * 95)
 
+    fwd_summary = []
     for days in [5, 10, 20, 60]:
         rets = []
         for _, row in top_picks.iterrows():
@@ -330,10 +339,20 @@ def _run_backtest_date(args, data, weights, scored_df):
         if rets:
             avg = np.mean(rets)
             wr = sum(1 for r in rets if r > 0) / len(rets)
-            print(f"  {days:>2}日后汇总: 平均收益 {avg:+.2%} | 胜率 {wr:.0%} ({sum(1 for r in rets if r > 0)}/{len(rets)})")
+            win_n = sum(1 for r in rets if r > 0)
+            print(f"  {days:>2}日后汇总: 平均收益 {avg:+.2%} | 胜率 {wr:.0%} ({win_n}/{len(rets)})")
+            fwd_summary.append({
+                'days': days,
+                'avg_return': avg,
+                'win_rate': wr,
+                'win_count': win_n,
+                'total_count': len(rets),
+            })
 
     print(f"\n  ⚠️  以上基于历史数据模拟，不构成投资建议。")
     print()
+
+    return scored_sim, target_date, fwd_summary, stock_details
 
 
 def main():
@@ -443,8 +462,16 @@ def main():
         # ================================================================
         # 阶段3.2: 指定日期选股 (可选)
         # ================================================================
+        backtest_date_info = None
+        fwd_summary = None
+        stock_details = None
         if args.backtest_date:
-            _run_backtest_date(args, data, weights, scored_df)
+            sim_scored, sim_date, sim_fwd, sim_details = _run_backtest_date(args, data, weights, scored_df)
+            if sim_scored is not None:
+                scored_df = sim_scored
+                backtest_date_info = sim_date
+                fwd_summary = sim_fwd
+                stock_details = sim_details
 
         # ================================================================
         # 阶段3.5: 买卖参考价 (可选)
@@ -584,16 +611,21 @@ def main():
             scored_df, args.top, weights,
             spot_filtered=data['spot_filtered'],
             backtest_result=backtest_result,
+            backtest_date=backtest_date_info,
+            fwd_summary=fwd_summary,
         )
 
         # HTML报告
         if not args.no_html:
-            generate_html_report(
+            actual_path = generate_html_report(
                 scored_df, args.top, weights, args.output,
                 spot_filtered=data['spot_filtered'],
                 backtest_result=backtest_result,
+                backtest_date=backtest_date_info,
+                fwd_summary=fwd_summary,
+                stock_details=stock_details,
             )
-            abs_path = os.path.abspath(args.output)
+            abs_path = os.path.abspath(actual_path)
             print(f"  ✅ HTML报告: {abs_path}")
 
         print("\n╔══════════════════════════════════════════════════╗")

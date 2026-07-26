@@ -37,14 +37,18 @@ def _pad_right(s, width):
 # ============================================================
 
 def print_terminal_report(scored_df, top_n, weights, spot_filtered=None,
-                          backtest_result=None):
+                          backtest_result=None, backtest_date=None, fwd_summary=None):
     """在终端打印格式化的选股结果"""
     top = scored_df.head(top_n)
 
     # ---- 表头 ----
     print("\n" + "═" * 95)
-    print("  A股多因子量化选股报告")
-    print(f"  生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    if backtest_date:
+        print(f"  A股多因子量化选股报告（模拟日期: {backtest_date.strftime('%Y-%m-%d')}）")
+        print(f"  模拟时间: {backtest_date.strftime('%Y-%m-%d')}  |  生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    else:
+        print("  A股多因子量化选股报告")
+        print(f"  生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     w = weights
     print(f"  因子权重: 价值{w.get('value',0.25):.0%} | 成长{w.get('growth',0.20):.0%} | "
           f"质量{w.get('quality',0.25):.0%} | 动量{w.get('momentum',0.20):.0%} | "
@@ -137,10 +141,19 @@ def print_terminal_report(scored_df, top_n, weights, spot_filtered=None,
 # ============================================================
 
 def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=None,
-                         backtest_result=None):
+                         backtest_result=None, backtest_date=None, fwd_summary=None,
+                         stock_details=None):
     """生成交互式HTML报告（含plotly图表）"""
     top = scored_df.head(top_n)
     total = len(scored_df)
+
+    # 根据是否有模拟日期调整输出文件名
+    if backtest_date and output_path:
+        date_tag = backtest_date.strftime('%Y%m%d')
+        output_path = output_path.replace(
+            datetime.now().strftime('%Y%m%d'),
+            f'sim_{date_tag}'
+        )
 
     colors = {
         'value': '#3498db',
@@ -179,17 +192,28 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     html_parts = []
 
     # === HEAD ===
-    html_parts.append(_html_head())
+    html_parts.append(_html_head(backtest_date))
 
     # === HEADER ===
     w = weights
+    if backtest_date:
+        title = f'📊 A股多因子量化选股报告<br><span style="color:#e74c3c;font-size:20px;">🕰️ 模拟日期: {backtest_date.strftime("%Y-%m-%d")}</span>'
+        subtitle = f'''模拟时间: {backtest_date.strftime('%Y-%m-%d')} &nbsp;|&nbsp;
+            生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')} &nbsp;|&nbsp;
+            权重: 价值{w.get('value',0.25):.0%} / 成长{w.get('growth',0.20):.0%} /
+            质量{w.get('quality',0.25):.0%} / 动量{w.get('momentum',0.20):.0%} /
+            风险{w.get('risk',0.10):.0%}'''
+    else:
+        title = '📊 A股多因子量化选股报告'
+        subtitle = f'''生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')} &nbsp;|&nbsp;
+            权重: 价值{w.get('value',0.25):.0%} / 成长{w.get('growth',0.20):.0%} /
+            质量{w.get('quality',0.25):.0%} / 动量{w.get('momentum',0.20):.0%} /
+            风险{w.get('risk',0.10):.0%}'''
+
     html_parts.append(f"""
-    <h1>📊 A股多因子量化选股报告</h1>
+    <h1>{title}</h1>
     <div class="subtitle">
-        生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')} &nbsp;|&nbsp;
-        权重: 价值{w.get('value',0.25):.0%} / 成长{w.get('growth',0.20):.0%} /
-        质量{w.get('quality',0.25):.0%} / 动量{w.get('momentum',0.20):.0%} /
-        风险{w.get('risk',0.10):.0%}
+        {subtitle}
     </div>
     """)
 
@@ -285,6 +309,69 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     """)
             html_parts.append('</div>')
 
+    # === 指定日期选股: 前瞻收益验证 ===
+    if fwd_summary:
+        html_parts.append(f"""
+    <h2 style="margin:24px 0 12px;color:#1a1a2e;">
+        🕰️ 模拟选股验证（{backtest_date.strftime('%Y-%m-%d') if backtest_date else ''} 买入后的实际表现）
+    </h2>
+    <table style="margin-bottom:20px;">
+    <thead><tr>
+        <th>持有天数</th><th>平均收益</th><th>胜率</th><th>盈利/总数</th><th>评价</th>
+    </tr></thead>
+    <tbody>""")
+        for item in fwd_summary:
+            avg = item['avg_return']
+            wr = item['win_rate']
+            avg_css = 'color:#27ae60;font-weight:600;' if avg > 0 else 'color:#e74c3c;font-weight:600;'
+            wr_css = 'color:#27ae60;font-weight:600;' if wr > 0.5 else 'color:#e74c3c;'
+            if wr >= 0.6 and avg > 0.02:
+                tag = '<span style="background:#27ae60;color:white;padding:2px 8px;border-radius:10px;font-size:11px;">优秀</span>'
+            elif wr >= 0.5 and avg > 0:
+                tag = '<span style="background:#f39c12;color:white;padding:2px 8px;border-radius:10px;font-size:11px;">良好</span>'
+            elif avg > 0:
+                tag = '<span style="background:#3498db;color:white;padding:2px 8px;border-radius:10px;font-size:11px;">一般</span>'
+            else:
+                tag = '<span style="background:#e74c3c;color:white;padding:2px 8px;border-radius:10px;font-size:11px;">较差</span>'
+            html_parts.append(f"""<tr>
+                <td><strong>{item['days']}日</strong></td>
+                <td style="{avg_css}">{avg:+.2%}</td>
+                <td style="{wr_css}">{wr:.0%}</td>
+                <td>{item['win_count']}/{item['total_count']}</td>
+                <td>{tag}</td>
+            </tr>""")
+        html_parts.append("""</tbody>
+    </table>
+    <p style="color:#999;font-size:12px;">⚠️ 以上收益为模拟推荐日的实际后续表现，用于验证策略有效性。不构成投资建议。</p>
+    """)
+
+    # === 个股前瞻收益明细表 ===
+    if stock_details:
+        html_parts.append("""
+    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 个股前瞻收益明细</h2>
+    <table style="margin-bottom:20px;">
+    <thead><tr>
+        <th>排名</th><th>代码</th><th>名称</th><th>买入价</th>
+        <th>5日后</th><th>10日后</th><th>20日后</th><th>60日后</th>
+    </tr></thead>
+    <tbody>""")
+        for s in stock_details:
+            def _fwd_cell(val):
+                if val is None or (isinstance(val, float) and np.isnan(val)):
+                    return '<td>-</td>'
+                css = 'color:#27ae60;font-weight:600;' if val > 0 else 'color:#e74c3c;font-weight:600;'
+                return f'<td style="{css}">{val:+.2%}</td>'
+
+            html_parts.append(f"""<tr>
+                <td><strong>{s['rank']}</strong></td>
+                <td><strong>{s['code']}</strong></td>
+                <td>{s['name']}</td>
+                <td>{s['price']:.2f}</td>
+                {_fwd_cell(s.get('fwd_5'))}{_fwd_cell(s.get('fwd_10'))}
+                {_fwd_cell(s.get('fwd_20'))}{_fwd_cell(s.get('fwd_60'))}
+            </tr>""")
+        html_parts.append("</tbody></table>")
+
     # === 详细表格 ===
     html_parts.append(_build_table(top))
 
@@ -302,18 +389,22 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(html_parts))
 
+    return output_path
+
 
 # ============================================================
 # HTML 构建辅助函数
 # ============================================================
 
-def _html_head():
+def _html_head(backtest_date=None):
+    date_str = backtest_date.strftime('%Y-%m-%d') if backtest_date else datetime.now().strftime('%Y-%m-%d')
+    title_str = f'A股选股报告(模拟{date_str})' if backtest_date else f'A股多因子选股报告 - {date_str}'
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>A股多因子选股报告 - {datetime.now().strftime('%Y-%m-%d')}</title>
+<title>{title_str}</title>
 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
