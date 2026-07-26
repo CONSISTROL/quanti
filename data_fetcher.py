@@ -658,11 +658,12 @@ def fetch_fund_history_batch(codes, fund_type='etf', cache_dir='cache',
 # 股票池过滤
 # ============================================================
 
-def filter_universe(spot_df, financial_df=None):
+def filter_universe(spot_df, financial_df=None, exclude_gem=False, exclude_star=False):
     """
     过滤股票池:
     - 排除 ST / *ST 股票
     - 排除北交所 (bj前缀)
+    - 可选排除创业板 (300xxx)、科创板 (688xxx)
     - 排除停牌股（成交量=0）
     - 排除亏损股（EPS ≤ 0，来自财报数据）
     """
@@ -684,6 +685,22 @@ def filter_universe(spot_df, financial_df=None):
     # 排除北交所 (bj前缀)
     mask_bj = df[code_col].str.startswith('bj', na=False)
     df = df[~mask_bj]
+
+    # 排除创业板 (300xxx)
+    mask_gem = 0
+    if exclude_gem:
+        pure_codes = df[code_col].apply(_code_pure)
+        mask_gem_s = pure_codes.str.startswith('300')
+        mask_gem = mask_gem_s.sum()
+        df = df[~mask_gem_s]
+
+    # 排除科创板 (688xxx)
+    mask_star = 0
+    if exclude_star:
+        pure_codes = df[code_col].apply(_code_pure)
+        mask_star_s = pure_codes.str.startswith('688')
+        mask_star = mask_star_s.sum()
+        df = df[~mask_star_s]
 
     # 数值列转换
     vol_col = _find_column(df, ['成交量'])
@@ -726,7 +743,12 @@ def filter_universe(spot_df, financial_df=None):
 
     print(f"  过滤: {initial_count} → {len(df)} 只股票")
     print(f"    排除: ST {mask_st.sum()} | 北交所 {mask_bj.sum()} | "
-          f"停牌 {suspended} | 亏损 {eps_excluded}")
+          f"停牌 {suspended} | 亏损 {eps_excluded}", end='')
+    if exclude_gem:
+        print(f" | 创业板 {mask_gem}", end='')
+    if exclude_star:
+        print(f" | 科创板 {mask_star}", end='')
+    print()
 
     return df
 
@@ -789,7 +811,9 @@ def fetch_all_data(args):
 
     # ---- Step 3: 过滤股票池 (使用财报EPS过滤亏损股) ----
     print(f"\n[3/4] 过滤股票池...")
-    filtered_df = filter_universe(spot_df, financial_df)
+    filtered_df = filter_universe(spot_df, financial_df,
+                                  exclude_gem=getattr(args, 'exclude_gem', False),
+                                  exclude_star=getattr(args, 'exclude_star', False))
     # 标记资产类型
     filtered_df['_asset_type'] = 'stock'
 

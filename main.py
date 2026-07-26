@@ -108,6 +108,12 @@ def parse_args(config=None):
     parser.add_argument('--include_etf_lof', action='store_true',
                         default=dt_cfg.get('include_etf_lof', False),
                         help='将ETF和LOF纳入选股池')
+    parser.add_argument('--exclude_gem', action='store_true',
+                        default=dt_cfg.get('exclude_gem', False),
+                        help='排除创业板 (300xxx)')
+    parser.add_argument('--exclude_star', action='store_true',
+                        default=dt_cfg.get('exclude_star', False),
+                        help='排除科创板 (688xxx)')
 
     # ---- 买卖参考价 ----
     parser.add_argument('--price_targets', action='store_true',
