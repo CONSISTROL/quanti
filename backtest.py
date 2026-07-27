@@ -103,7 +103,10 @@ STRATEGIES = {
     'reversion': {'label': '反转策略', 'desc': '买入近期跌幅最大的股票（逆向投资）'},
     'trend':     {'label': '趋势策略', 'desc': '买入均线之上且有动量的股票'},
     'low_vol':   {'label': '低波动策略', 'desc': '买入波动率最低的股票'},
-    'composite': {'label': '复合策略', 'desc': '动量+趋势+低波动的加权综合'},
+    'macd':      {'label': 'MACD策略', 'desc': 'MACD金叉+柱状线扩大'},
+    'skdj':      {'label': 'SKDJ策略', 'desc': 'SKDJ超卖区金叉反弹'},
+    'tech':      {'label': '技术综合', 'desc': 'MACD+SKDJ+成交量+动量的加权综合'},
+    'composite': {'label': '复合策略', 'desc': '动量+趋势+低波动+技术面的加权综合'},
 }
 
 
@@ -115,13 +118,181 @@ def _code_pure(code):
     return code.zfill(6)
 
 
-def compute_factors_at_date(closes, strategy='composite'):
+def _ema(data, period):
+    """计算指数移动平均"""
+    if len(data) < period:
+        return np.full_like(data, np.nan)
+    alpha = 2.0 / (period + 1)
+    result = np.full_like(data, np.nan, dtype=float)
+    result[period - 1] = np.mean(data[:period])
+    for i in range(period, len(data)):
+        result[i] = alpha * data[i] + (1 - alpha) * result[i - 1]
+    return result
+
+
+def _compute_macd(closes):
     """
-    在某个历史截断点计算因子 (只用closes数组)
+    计算MACD指标
+    返回: (macd_hist, macd_signal_cross, macd_hist_expanding)
+    - macd_hist: MACD柱状线值 (正=多头)
+    - macd_signal_cross: 1=金叉, -1=死叉, 0=无
+    - macd_hist_expanding: 1=柱状线扩大, -1=缩小, 0=无
+    """
+    ema12 = _ema(closes, 12)
+    ema26 = _ema(closes, 26)
+    dif = ema12 - ema26  # MACD线
+
+    # 信号线 (DIF的9日EMA)
+    valid_dif = dif[~np.isnan(dif)]
+    if len(valid_dif) < 9:
+        return 0, 0, 0
+    dea_full = _ema(dif[~np.isnan(dif)], 9)
+    dea = dea_full[-1] if len(dea_full) > 0 else np.nan
+    dif_now = dif[-1]
+
+    if np.isnan(dif_now) or np.isnan(dea):
+        return 0, 0, 0
+
+    macd_hist = (dif_now - dea) * 2  # 柱状线
+
+    # 金叉/死叉判断 (最近3天内)
+    cross = 0
+    if len(valid_dif) >= 4 and len(dea_full) >= 4:
+        for lag in range(1, 4):
+            if lag < len(valid_dif) and lag < len(dea_full):
+                prev_dif = valid_dif[-(lag + 1)]
+                prev_dea = dea_full[-(lag + 1)]
+                curr_dif = valid_dif[-lag]
+                curr_dea = dea_full[-lag]
+                if not (np.isnan(prev_dif) or np.isnan(prev_dea) or
+                        np.isnan(curr_dif) or np.isnan(curr_dea)):
+                    if prev_dif <= prev_dea and curr_dif > curr_dea:
+                        cross = 1  # 金叉
+                        break
+                    elif prev_dif >= prev_dea and curr_dif < curr_dea:
+                        cross = -1  # 死叉
+                        break
+
+    # 柱状线是否在扩大
+    expanding = 0
+    if len(dea_full) >= 2:
+        prev_hist = (valid_dif[-2] - dea_full[-2]) * 2
+        curr_hist = macd_hist
+        if not np.isnan(prev_hist):
+            if abs(curr_hist) > abs(prev_hist):
+                expanding = 1
+            else:
+                expanding = -1
+
+    return macd_hist, cross, expanding
+
+
+def _compute_skdj(highs, lows, closes, n_period=9, m1=3, m2=3):
+    """
+    计算SKDJ (慢速KDJ)
+    返回: (k, d, j, k_cross_d)
+    - k, d, j: SKDJ三条线 (0-100)
+    - k_cross_d: 1=金叉, -1=死叉, 0=无
+    """
+    if len(closes) < n_period + 6:
+        return 50, 50, 50, 0
+
+    # RSV
+    k_values = []
+    d_values = []
+
+    k_prev = 50.0
+    d_prev = 50.0
+
+    for i in range(n_period - 1, len(closes)):
+        window_high = np.max(highs[i - n_period + 1:i + 1])
+        window_low = np.min(lows[i - n_period + 1:i + 1])
+
+        if window_high == window_low:
+            rsv = 50.0
+        else:
+            rsv = (closes[i] - window_low) / (window_high - window_low) * 100
+
+        # K = (m1-1)/m1 * K_prev + 1/m1 * RSV (慢速平滑)
+        k = (m1 - 1) / m1 * k_prev + 1.0 / m1 * rsv
+        # D = (m2-1)/m2 * D_prev + 1/m2 * K
+        d = (m2 - 1) / m2 * d_prev + 1.0 / m2 * k
+
+        k_values.append(k)
+        d_values.append(d)
+        k_prev = k
+        d_prev = d
+
+    if len(k_values) < 2:
+        return 50, 50, 50, 0
+
+    k_now = k_values[-1]
+    d_now = d_values[-1]
+    j_now = 3 * k_now - 2 * d_now
+
+    # J = 3K - 2D
+
+    # K上穿D (金叉/死叉)
+    cross = 0
+    for lag in range(1, min(4, len(k_values))):
+        if k_values[-(lag + 1)] <= d_values[-(lag + 1)] and k_values[-lag] > d_values[-lag]:
+            cross = 1  # 金叉
+            break
+        elif k_values[-(lag + 1)] >= d_values[-(lag + 1)] and k_values[-lag] < d_values[-lag]:
+            cross = -1  # 死叉
+            break
+
+    return k_now, d_now, j_now, cross
+
+
+def _compute_volume_factor(volumes, closes):
+    """
+    成交量因子
+    返回: (vol_ratio, vol_price_score)
+    - vol_ratio: 近5日均量 / 近20日均量 (放量程度)
+    - vol_price_score: 量价配合得分
+      - 价涨量增: 正分 (健康上涨)
+      - 价涨量缩: 负分 (上涨乏力)
+      - 价跌量增: 负分 (恐慌出逃)
+      - 价跌量缩: 正分 (缩量回调, 可能企稳)
+    """
+    if len(volumes) < 20 or len(closes) < 20:
+        return 1.0, 0
+
+    vol_5 = np.mean(volumes[-5:])
+    vol_20 = np.mean(volumes[-20:])
+    vol_ratio = vol_5 / vol_20 if vol_20 > 0 else 1.0
+
+    # 量价关系
+    price_chg = (closes[-1] / closes[-6]) - 1.0 if len(closes) >= 6 else 0
+    vol_chg = vol_ratio - 1.0  # 正=放量, 负=缩量
+
+    if price_chg > 0 and vol_chg > 0:
+        # 价涨量增: 健康上涨, 加分
+        vol_price_score = min(vol_chg, 2.0) * 0.5
+    elif price_chg > 0 and vol_chg < 0:
+        # 价涨量缩: 上涨乏力
+        vol_price_score = vol_chg * 0.3
+    elif price_chg < 0 and vol_chg > 0:
+        # 价跌量增: 恐慌抛售, 减分
+        vol_price_score = -min(vol_chg, 2.0) * 0.5
+    else:
+        # 价跌量缩: 缩量回调, 可能企稳, 小幅加分
+        vol_price_score = 0.1
+
+    return vol_ratio, vol_price_score
+
+
+def compute_factors_at_date(closes, strategy='composite', volumes=None, highs=None, lows=None):
+    """
+    在某个历史截断点计算因子
 
     参数:
         closes: numpy array of close prices up to the rebalance date
         strategy: 策略名称
+        volumes: numpy array of volumes (可选)
+        highs: numpy array of high prices (可选, SKDJ需要)
+        lows: numpy array of low prices (可选, SKDJ需要)
 
     返回: float score (越高越好), 或 None (数据不足)
     """
@@ -131,33 +302,32 @@ def compute_factors_at_date(closes, strategy='composite'):
 
     scores = {}
 
-    # 动量因子: 1月/3月/6月收益率
+    # ---- 动量因子: 1月/3月/6月收益率 ----
     ret_1m = (closes[-1] / closes[-min(21, n)]) - 1.0 if n >= 21 else 0
     ret_3m = (closes[-1] / closes[-min(61, n)]) - 1.0 if n >= 61 else 0
     ret_6m = (closes[-1] / closes[-min(121, n)]) - 1.0 if n >= 121 else 0
     scores['momentum'] = ret_1m * 0.2 + ret_3m * 0.4 + ret_6m * 0.4
 
-    # 反转因子: 近期跌幅越大，反转得分越高 (取反)
+    # ---- 反转因子 ----
     ret_recent = (closes[-1] / closes[-min(11, n)]) - 1.0 if n >= 11 else 0
-    scores['reversion'] = -ret_recent  # 跌得多 = 得分高
+    scores['reversion'] = -ret_recent
 
-    # 趋势因子: 收盘价相对MA60的位置
+    # ---- 趋势因子 ----
     ma60 = np.mean(closes[-min(60, n):])
     ma120 = np.mean(closes[-min(120, n):]) if n >= 120 else ma60
-    trend_strength = (closes[-1] - ma60) / ma60  # 正=在均线上方
-    # 均线多头排列加分
+    trend_strength = (closes[-1] - ma60) / ma60
     ma_alignment = 1.0 if ma60 > ma120 else 0.5
     scores['trend'] = trend_strength * ma_alignment
 
-    # 低波动因子: 波动率取反 (越低越好)
+    # ---- 低波动因子 ----
     if n >= 60:
         log_ret = np.diff(np.log(closes[-60:]))
         vol = np.std(log_ret) * np.sqrt(252) if len(log_ret) > 0 else 999
-        scores['low_vol'] = -vol  # 低波动 = 高分
+        scores['low_vol'] = -vol
     else:
         scores['low_vol'] = 0
 
-    # 最大回撤因子
+    # ---- 最大回撤因子 ----
     if n >= 60:
         recent = closes[-min(120, n):]
         peaks = np.maximum.accumulate(recent)
@@ -167,13 +337,58 @@ def compute_factors_at_date(closes, strategy='composite'):
     else:
         scores['low_drawdown'] = 0
 
-    # 策略权重映射
+    # ---- MACD因子 ----
+    macd_hist, macd_cross, macd_expanding = _compute_macd(closes)
+    macd_score = 0
+    if macd_cross == 1:    # 金叉: 强烈看多
+        macd_score += 2.0
+    elif macd_cross == -1:  # 死叉: 看空
+        macd_score -= 2.0
+    if macd_hist > 0:       # 柱状线为正: 多头
+        macd_score += 0.5
+    if macd_expanding == 1 and macd_hist > 0:  # 多头+柱状线扩大
+        macd_score += 0.5
+    scores['macd'] = macd_score
+
+    # ---- SKDJ因子 ----
+    if highs is not None and lows is not None:
+        k, d, j, skdj_cross = _compute_skdj(highs, lows, closes)
+        skdj_score = 0
+        if skdj_cross == 1 and k < 30:    # 超卖区金叉: 强烈看多
+            skdj_score += 2.0
+        elif skdj_cross == 1 and k < 50:  # 中低位金叉
+            skdj_score += 1.0
+        elif skdj_cross == -1 and k > 70:  # 超买区死叉: 看空
+            skdj_score -= 2.0
+        elif skdj_cross == -1 and k > 50:  # 中高位死叉
+            skdj_score -= 1.0
+        # J值极端区域
+        if j < 0:
+            skdj_score += 0.5  # 超卖反弹概率大
+        elif j > 100:
+            skdj_score -= 0.5  # 超买回调概率大
+        scores['skdj'] = skdj_score
+    else:
+        scores['skdj'] = 0
+
+    # ---- 成交量因子 ----
+    if volumes is not None:
+        vol_ratio, vol_price_score = _compute_volume_factor(volumes, closes)
+        scores['volume'] = vol_price_score
+    else:
+        scores['volume'] = 0
+
+    # ---- 策略权重映射 ----
     strategy_weights = {
         'momentum':  {'momentum': 1.0},
         'reversion': {'reversion': 1.0},
         'trend':     {'trend': 0.6, 'momentum': 0.4},
         'low_vol':   {'low_vol': 0.6, 'low_drawdown': 0.4},
-        'composite': {'momentum': 0.3, 'trend': 0.3, 'low_vol': 0.2, 'low_drawdown': 0.2},
+        'macd':      {'macd': 0.5, 'trend': 0.3, 'volume': 0.2},
+        'skdj':      {'skdj': 0.5, 'reversion': 0.3, 'volume': 0.2},
+        'tech':      {'macd': 0.25, 'skdj': 0.25, 'volume': 0.25, 'momentum': 0.25},
+        'composite': {'momentum': 0.2, 'trend': 0.2, 'low_vol': 0.1, 'low_drawdown': 0.1,
+                      'macd': 0.15, 'skdj': 0.15, 'volume': 0.1},
     }
 
     w = strategy_weights.get(strategy, strategy_weights['composite'])
@@ -281,12 +496,21 @@ def run_backtest(scored_df, history_dict, financial_df, financial_prev_df,
 
         closes = hist['close'].values.astype(float)
         dates = hist['date'].values
+        volumes = hist['volume'].values.astype(float) if 'volume' in hist.columns else None
+        highs = hist['high'].values.astype(float) if 'high' in hist.columns else None
+        lows = hist['low'].values.astype(float) if 'low' in hist.columns else None
         # 按日期排序
         sort_idx = np.argsort(dates)
         closes = closes[sort_idx]
         dates = dates[sort_idx]
+        if volumes is not None:
+            volumes = volumes[sort_idx]
+        if highs is not None:
+            highs = highs[sort_idx]
+        if lows is not None:
+            lows = lows[sort_idx]
 
-        stock_data.append((sina_code, closes, dates))
+        stock_data.append((sina_code, closes, dates, volumes, highs, lows))
 
     print(f"  有历史数据的证券: {len(stock_data)}")
 
@@ -296,7 +520,7 @@ def run_backtest(scored_df, history_dict, financial_df, financial_prev_df,
 
     # ---- 找共同日期范围 ----
     all_dates_set = None
-    for _, _, dates in stock_data:
+    for _, _, dates, _, _, _ in stock_data:
         s = set(pd.Timestamp(d) for d in dates)
         if all_dates_set is None:
             all_dates_set = s
@@ -343,7 +567,7 @@ def run_backtest(scored_df, history_dict, financial_df, financial_prev_df,
 
     # ---- 预计算每只股票的 (日期→索引) 映射 ----
     stock_date_map = {}
-    for sina_code, closes, dates in stock_data:
+    for sina_code, closes, dates, volumes, highs, lows in stock_data:
         ts_dates = [(pd.Timestamp(d), i) for i, d in enumerate(dates)]
         ts_dates.sort(key=lambda x: x[0])
         stock_date_map[sina_code] = ts_dates
@@ -377,7 +601,7 @@ def run_backtest(scored_df, history_dict, financial_df, financial_prev_df,
                     result.periods[hp].returns.append(0.0)  # 空仓 = 0收益
                     # 基准照常计算
                     bench_rets = []
-                    for sina_code, closes, dates in stock_data:
+                    for sina_code, closes, dates, volumes, highs, lows in stock_data:
                         idx = find_idx(sina_code, rb_date)
                         if idx is not None:
                             ret = compute_forward_return(closes, idx, hp)
@@ -389,14 +613,20 @@ def run_backtest(scored_df, history_dict, financial_df, financial_prev_df,
 
         # ---- 计算每只股票的因子得分 ----
         scored_stocks = []
-        for sina_code, closes, dates in stock_data:
+        for sina_code, closes, dates, volumes, highs, lows in stock_data:
             idx = find_idx(sina_code, rb_date)
             if idx is None or idx < 60:
                 continue
 
-            # 截取到该日的收盘价
+            # 截取到该日的数据
             truncated_closes = closes[:idx + 1]
-            score = compute_factors_at_date(truncated_closes, strategy)
+            truncated_vols = volumes[:idx + 1] if volumes is not None else None
+            truncated_highs = highs[:idx + 1] if highs is not None else None
+            truncated_lows = lows[:idx + 1] if lows is not None else None
+            score = compute_factors_at_date(
+                truncated_closes, strategy,
+                volumes=truncated_vols, highs=truncated_highs, lows=truncated_lows
+            )
             if score is not None and not np.isnan(score):
                 scored_stocks.append({
                     'sina': sina_code,
@@ -449,7 +679,7 @@ def run_backtest(scored_df, history_dict, financial_df, financial_prev_df,
 
             # 基准 (全市场等权)
             bench_rets = []
-            for sina_code, closes, dates in stock_data:
+            for sina_code, closes, dates, volumes, highs, lows in stock_data:
                 idx = find_idx(sina_code, rb_date)
                 if idx is not None:
                     ret = compute_forward_return(closes, idx, hp)

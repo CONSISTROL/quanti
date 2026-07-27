@@ -142,7 +142,7 @@ def print_terminal_report(scored_df, top_n, weights, spot_filtered=None,
 
 def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=None,
                          backtest_result=None, backtest_date=None, fwd_summary=None,
-                         stock_details=None):
+                         stock_details=None, trade_result=None):
     """生成交互式HTML报告（含plotly图表）"""
     top = scored_df.head(top_n)
     total = len(scored_df)
@@ -387,6 +387,98 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 {_fwd_cell(s.get('fwd_today'))}
             </tr>""")
         html_parts.append("</tbody></table>")
+
+    # === 波段交易回测结果 ===
+    if trade_result:
+        stats = trade_result['stats']
+        trades = trade_result['trades']
+        equity_chart_html = ''
+        try:
+            from trading_engine import generate_equity_chart
+            equity_chart_html = generate_equity_chart(trade_result)
+        except Exception:
+            pass
+
+        # 统计卡片
+        html_parts.append("""
+    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📈 波段交易回测</h2>
+    <div class="cards">""")
+        ret_css = 'color:#27ae60;' if stats['total_return'] > 0 else 'color:#e74c3c;'
+        html_parts.append(f"""
+        <div class="card"><div class="card-label">总收益率</div>
+            <div class="card-value" style="{ret_css}">{stats['total_return']:+.1%}</div></div>
+        <div class="card"><div class="card-label">年化收益</div>
+            <div class="card-value" style="{ret_css}">{stats['annual_return']:+.1%}</div></div>
+        <div class="card"><div class="card-label">Sharpe</div>
+            <div class="card-value">{stats['sharpe']:.2f}</div></div>
+        <div class="card"><div class="card-label">最大回撤</div>
+            <div class="card-value" style="color:#e74c3c;">{stats['max_drawdown']:.1%}</div></div>
+        <div class="card"><div class="card-label">交易次数</div>
+            <div class="card-value">{stats['total_trades']}</div></div>
+        <div class="card"><div class="card-label">胜率</div>
+            <div class="card-value">{stats['win_rate']:.0%}</div></div>
+        <div class="card"><div class="card-label">盈亏比</div>
+            <div class="card-value">{stats['profit_loss_ratio']:.2f}</div></div>
+        <div class="card"><div class="card-label">最终资金</div>
+            <div class="card-value" style="{ret_css}">¥{stats['final_value']:,.0f}</div></div>
+    </div>""")
+
+        # 收益曲线
+        if equity_chart_html:
+            html_parts.append(f"""
+    <div class="chart-container" style="margin-bottom:20px;">
+        {equity_chart_html}
+    </div>""")
+
+        # 操作记录表
+        if trades:
+            html_parts.append("""
+    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 操作记录</h2>
+    <table style="margin-bottom:20px;">
+    <thead><tr>
+        <th>日期</th><th>方向</th><th>代码</th><th>名称</th>
+        <th>价格</th><th>数量</th><th>金额</th><th>盈亏</th><th>原因</th>
+    </tr></thead>
+    <tbody>""")
+            for t in trades:
+                dir_css = 'color:#27ae60;font-weight:600;' if t.direction == 'BUY' else 'color:#e74c3c;font-weight:600;'
+                dir_label = '买入' if t.direction == 'BUY' else '卖出'
+                pnl_str = f'{t.pnl_pct:+.1%}' if t.direction == 'SELL' else '-'
+                pnl_css = ''
+                if t.direction == 'SELL':
+                    pnl_css = 'color:#27ae60;' if t.pnl_pct > 0 else 'color:#e74c3c;'
+                html_parts.append(f"""<tr>
+                    <td>{t.date.strftime('%m-%d')}</td>
+                    <td style="{dir_css}">{dir_label}</td>
+                    <td><strong>{t.code}</strong></td>
+                    <td>{t.name}</td>
+                    <td>{t.price:.2f}</td>
+                    <td>{t.shares}</td>
+                    <td>¥{t.amount:,.0f}</td>
+                    <td style="{pnl_css}font-weight:600;">{pnl_str}</td>
+                    <td>{t.reason}</td>
+                </tr>""")
+            html_parts.append("</tbody></table>")
+
+        # 当前持仓
+        if trade_result.get('final_positions'):
+            html_parts.append("""
+    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📦 当前持仓建议</h2>
+    <table style="margin-bottom:20px;">
+    <thead><tr><th>代码</th><th>名称</th><th>成本价</th><th>数量</th><th>投入资金</th><th>占比</th></tr></thead>
+    <tbody>""")
+            total_value = sum(p.capital for p in trade_result['final_positions'])
+            for pos in trade_result['final_positions']:
+                pct = pos.capital / stats['initial_capital'] * 100
+                html_parts.append(f"""<tr>
+                    <td><strong>{pos.code}</strong></td>
+                    <td>{pos.name}</td>
+                    <td>¥{pos.entry_price:.2f}</td>
+                    <td>{pos.shares}</td>
+                    <td>¥{pos.capital:,.0f}</td>
+                    <td>{pct:.1f}%</td>
+                </tr>""")
+            html_parts.append("</tbody></table>")
 
     # === 详细表格 ===
     html_parts.append(_build_table(top))
