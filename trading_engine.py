@@ -106,6 +106,7 @@ def compute_indicators(closes, volumes=None, highs=None, lows=None):
     # 收益率
     ind['ret_5d'] = (closes[-1] / closes[-6] - 1) if n >= 6 else 0
     ind['ret_20d'] = (closes[-1] / closes[-21] - 1) if n >= 21 else 0
+    ind['ret_60d'] = (closes[-1] / closes[-61] - 1) if n >= 61 else 0
 
     # 波动率
     if n >= 20:
@@ -126,10 +127,11 @@ def compute_indicators(closes, volumes=None, highs=None, lows=None):
 
 def check_buy_signal(ind):
     """
-    超短线反弹买入信号 v3 — 返回 (is_buy, score, reason)
+    龙头股 + SKDJ超卖金叉买入
 
-    核心: 极度超跌 + 反转确认 + 大盘配合
-    只在最确定的机会入场, 追求高胜率
+    龙头已通过scored_df排名筛选(TOP50), 这里只需判断SKDJ时机:
+    - 必须: SKDJ金叉 + K<35 (超卖区)
+    - 加分: J超卖, 缩量回调, MA60支撑, 长期趋势
     """
     score = 0
     reasons = []
@@ -138,92 +140,91 @@ def check_buy_signal(ind):
     if price <= 0:
         return False, 0, ''
 
-    # 条件1: 长期趋势必须向上 (MA120之上)
-    ma120 = ind.get('ma120', 0)
-    if np.isnan(ma120) or price < ma120 * 0.95:
-        return False, 0, ''
-
-    # 条件2: 短期超跌 (5日跌幅要大)
-    ret_5d = ind.get('ret_5d', 0)
-    if ret_5d < -0.05:
-        score += 4
-        reasons.append(f'深度超跌{ret_5d:.1%}')
-    elif ret_5d < -0.03:
-        score += 2
-        reasons.append(f'超跌{ret_5d:.1%}')
-    else:
-        return False, 0, ''  # 跌幅不够不买
-
-    # 条件3: SKDJ极度超卖 + 金叉确认反转
     k = ind['skdj_k']
     j = ind['skdj_j']
-    if ind['skdj_cross'] == 1 and k < 20:
-        score += 4
-        reasons.append(f'SKDJ极度超卖金叉(K={k:.0f})')
-    elif ind['skdj_cross'] == 1 and k < 35:
-        score += 3
-        reasons.append(f'SKDJ超卖金叉(K={k:.0f})')
-    elif j < 0 and k < 20:
-        score += 2
-        reasons.append(f'J值极度超卖(J={j:.0f})')
+    cross = ind['skdj_cross']
+
+    # ---- SKDJ金叉 (必须) ----
+    if cross != 1:
+        return False, 0, ''
+
+    # ---- 超卖区 (K<35) ----
+    if k > 35:
+        return False, 0, ''
+
+    if k < 15:
+        score += 5
+        reasons.append(f'深度超卖金叉(K={k:.0f})')
     elif k < 25:
-        score += 1
-        reasons.append(f'SKDJ低位(K={k:.0f})')
+        score += 4
+        reasons.append(f'超卖金叉(K={k:.0f})')
     else:
-        return False, 0, ''  # SKDJ没到超卖区不买
-
-    # 条件4: 缩量 (卖压衰竭, 必须确认)
-    vol_ratio = ind.get('vol_ratio', 1.0)
-    if vol_ratio < 0.6:
         score += 3
-        reasons.append(f'极度缩量({vol_ratio:.1f}x)')
-    elif vol_ratio < 0.8:
+        reasons.append(f'低位金叉(K={k:.0f})')
+
+    # J值加分
+    if j < -10:
         score += 2
+        reasons.append(f'J极超卖({j:.0f})')
+    elif j < 0:
+        score += 1
+        reasons.append(f'J超卖({j:.0f})')
+
+    # 缩量回调 (龙头洗盘)
+    vol_ratio = ind.get('vol_ratio', 1.0)
+    if vol_ratio < 0.7:
+        score += 2
+        reasons.append(f'缩量洗盘({vol_ratio:.1f}x)')
+    elif vol_ratio < 0.9:
+        score += 1
         reasons.append(f'缩量({vol_ratio:.1f}x)')
-    elif vol_ratio < 1.0:
-        score += 1
-        reasons.append(f'温和缩量({vol_ratio:.1f}x)')
-    else:
-        score -= 1  # 放量下跌不好
 
-    # 条件5: 反弹迹象 (今日收阳或昨日收阳)
-    ma5 = ind.get('ma5', 0)
-    if not np.isnan(ma5) and price > ma5:
-        score += 1
-        reasons.append('站上MA5')
-
-    # 条件6: 支撑位 (MA60附近)
+    # MA60支撑
     ma60 = ind.get('ma60', 0)
     if not np.isnan(ma60) and ma60 > 0:
         dist = (price - ma60) / ma60
-        if -0.02 < dist < 0.02:
-            score += 2
-            reasons.append('MA60支撑')
-        elif dist > 0.02:
+        if -0.03 < dist < 0.03:
             score += 1
+            reasons.append('MA60支撑')
 
-    # 高门槛: 需要 >= 9分
-    is_buy = score >= 9
+    # 长期趋势
+    ma120 = ind.get('ma120', 0)
+    if not np.isnan(ma120) and price > ma120:
+        score += 1
+        reasons.append('长期↑')
+
+    is_buy = score >= 7
     return is_buy, score, '+'.join(reasons)
 
 
 def check_sell_signal(ind, entry_price, holding_days, max_profit_seen=0):
     """
-    超短线卖出信号 — 快进快出
-    1. 止盈: 盈利 >= 3%
-    2. 止损: 亏损 >= 2%
-    3. 到期: 持有 >= 4天
+    SKDJ卖出信号
+    1. SKDJ超买死叉 (K>65)
+    2. 止盈 >= 5%
+    3. 止损 >= -3%
+    4. J超买 + 盈利
+    5. 到期 >= 8天
     """
     price = ind.get('close', 0)
     pnl = (price / entry_price - 1) if entry_price > 0 else 0
+    k = ind['skdj_k']
+    cross = ind['skdj_cross']
+    j = ind['skdj_j']
 
-    if pnl >= 0.03:
+    if cross == -1 and k > 65:
+        return True, f'SKDJ超买死叉(K={k:.0f})'
+
+    if pnl >= 0.05:
         return True, f'止盈({pnl:.1%})'
 
-    if pnl <= -0.02:
+    if pnl <= -0.03:
         return True, f'止损({pnl:.1%})'
 
-    if holding_days >= 4:
+    if j > 100 and pnl > 0:
+        return True, f'J超买(J={j:.0f},{pnl:+.1%})'
+
+    if holding_days >= 8:
         return True, f'到期({holding_days}天{pnl:+.1%})'
 
     return False, ''
@@ -306,18 +307,18 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 break
         pure_to_sina[code.zfill(6)] = sina_code
 
-    # 获取候选股票列表 (从scored_df中取排名靠前的)
+    # 获取候选股票列表 — 只取打分排名前50的龙头股
     candidate_codes = []
     if scored_df is not None and 'code' in scored_df.columns:
-        for _, row in scored_df.head(200).iterrows():
+        for _, row in scored_df.head(50).iterrows():
             code = str(row['code']).zfill(6)
             if code in pure_to_sina:
                 candidate_codes.append(code)
 
     if not candidate_codes:
-        candidate_codes = list(pure_to_sina.keys())[:200]
+        candidate_codes = list(pure_to_sina.keys())[:50]
 
-    print(f"  候选股票: {len(candidate_codes)} 只")
+    print(f"  龙头候选: {len(candidate_codes)} 只 (TOP 50)")
 
     # 找共同交易日
     all_dates = set()
@@ -409,7 +410,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 if code in cooldown:
                     sell_date = cooldown[code]
                     days_since_sell = sum(1 for d in trading_dates if sell_date < d <= today)
-                    if days_since_sell < 2:
+                    if days_since_sell < 3:
                         continue
                 sina = pure_to_sina.get(code)
                 if not sina:
@@ -588,58 +589,144 @@ def print_trade_summary(result):
 
 
 def generate_equity_chart(result):
-    """生成收益曲线图 (Plotly HTML)"""
+    """生成收益曲线图 (Plotly HTML) — 美化版"""
     if result is None or not result['equity_curve']:
         return ''
 
     dates = [e[0] for e in result['equity_curve']]
     values = [e[1] for e in result['equity_curve']]
     initial = result['initial_capital']
+    stats = result['stats']
 
-    # 净值
+    # 净值序列
     nav = [v / initial for v in values]
-    # 基准 (假设买入持有沪深300等权)
-    benchmark_nav = [1.0] * len(nav)  # 简化: 基准为1
 
-    fig = go.Figure()
+    # 回撤序列 (用于下方子图)
+    peaks = np.maximum.accumulate(nav)
+    drawdowns = [(p - n) / p * 100 for p, n in zip(peaks, nav)]
 
-    # 策略净值
+    from plotly.subplots import make_subplots
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.75, 0.25],
+        subplot_titles=('', ''),
+    )
+
+    # ---- 上图: 净值曲线 ----
+    # 渐变色填充
+    final_ret = stats['total_return']
+    line_color = '#10b981' if final_ret >= 0 else '#ef4444'
+    fill_color = 'rgba(16,185,129,0.08)' if final_ret >= 0 else 'rgba(239,68,68,0.08)'
+
     fig.add_trace(go.Scatter(
         x=dates, y=nav, mode='lines',
         name='策略净值',
-        line=dict(color='#3498db', width=2),
-        fill='tozeroy', fillcolor='rgba(52,152,219,0.1)',
-    ))
+        line=dict(color=line_color, width=2.5, shape='spline', smoothing=0.8),
+        fill='tozeroy', fillcolor=fill_color,
+        hovertemplate='日期: %{x|%Y-%m-%d}<br>净值: %{y:.4f}<br>收益: %{text}<extra></extra>',
+        text=[f'{(n-1)*100:+.2f}%' for n in nav],
+    ), row=1, col=1)
+
+    # 基准线 (净值=1)
+    fig.add_hline(y=1.0, line_dash='dash', line_color='#94a3b8', line_width=1,
+                  row=1, col=1)
 
     # 买卖标记
-    for t in result['trades']:
+    buy_trades = [t for t in result['trades'] if t.direction == 'BUY']
+    sell_trades = [t for t in result['trades'] if t.direction == 'SELL']
+
+    for t in buy_trades:
         if t.date in dates:
             idx = dates.index(t.date)
-            if t.direction == 'BUY':
-                fig.add_trace(go.Scatter(
-                    x=[t.date], y=[nav[idx]],
-                    mode='markers', marker=dict(symbol='triangle-up', size=10, color='#27ae60'),
-                    name='买入' if t == result['trades'][0] else '',
-                    showlegend=(t == next((x for x in result['trades'] if x.direction == 'BUY'), None)),
-                    hovertext=f'{t.code} {t.name}<br>{t.reason}<br>¥{t.price:.2f}',
-                ))
-            else:
-                fig.add_trace(go.Scatter(
-                    x=[t.date], y=[nav[idx]],
-                    mode='markers', marker=dict(symbol='triangle-down', size=10, color='#e74c3c'),
-                    name='卖出' if t == result['trades'][0] else '',
-                    showlegend=(t == next((x for x in result['trades'] if x.direction == 'SELL'), None)),
-                    hovertext=f'{t.code} {t.name}<br>{t.reason}<br>{t.pnl_pct:+.1%}',
-                ))
+            fig.add_trace(go.Scatter(
+                x=[t.date], y=[nav[idx]],
+                mode='markers',
+                marker=dict(symbol='triangle-up', size=9, color='#10b981',
+                            line=dict(width=1.5, color='white')),
+                name='买入' if t == buy_trades[0] else None,
+                showlegend=(t == buy_trades[0]),
+                legendgroup='buy',
+                hovertemplate=f'<b>🟢 买入</b><br>'
+                              f'{t.code} {t.name}<br>'
+                              f'价格: ¥{t.price:.2f}<br>'
+                              f'信号: {t.reason}<extra></extra>',
+            ), row=1, col=1)
+
+    for t in sell_trades:
+        if t.date in dates:
+            idx = dates.index(t.date)
+            sell_color = '#10b981' if t.pnl_pct > 0 else '#ef4444'
+            fig.add_trace(go.Scatter(
+                x=[t.date], y=[nav[idx]],
+                mode='markers',
+                marker=dict(symbol='triangle-down', size=9, color=sell_color,
+                            line=dict(width=1.5, color='white')),
+                name='卖出' if t == sell_trades[0] else None,
+                showlegend=(t == sell_trades[0]),
+                legendgroup='sell',
+                hovertemplate=f'<b>🔴 卖出</b><br>'
+                              f'{t.code} {t.name}<br>'
+                              f'盈亏: {t.pnl_pct:+.1%}<br>'
+                              f'原因: {t.reason}<extra></extra>',
+            ), row=1, col=1)
+
+    # ---- 下图: 回撤曲线 ----
+    fig.add_trace(go.Scatter(
+        x=dates, y=[-d for d in drawdowns],
+        mode='lines',
+        name='回撤',
+        line=dict(color='#ef4444', width=1),
+        fill='tozeroy', fillcolor='rgba(239,68,68,0.15)',
+        hovertemplate='日期: %{x|%Y-%m-%d}<br>回撤: %{y:.1f}%<extra></extra>',
+    ), row=2, col=1)
+
+    # ---- 布局美化 ----
+    ret_text = f'{final_ret:+.2%}'
+    ret_color = '#10b981' if final_ret >= 0 else '#ef4444'
 
     fig.update_layout(
-        title='策略净值曲线',
-        xaxis=dict(title='日期', gridcolor='#f0f0f0'),
-        yaxis=dict(title='净值', gridcolor='#f0f0f0'),
-        height=400, margin=dict(t=40, b=30, l=50, r=20),
-        legend=dict(orientation='h', y=1.12, x=0.5, xanchor='center'),
-        font=dict(size=12),
-        hovermode='closest',
+        title=dict(
+            text=f'策略净值曲线  '
+                 f'<span style="font-size:14px;color:#64748b;">'
+                 f'收益 <span style="color:{ret_color};font-weight:600;">{ret_text}</span>'
+                 f' | Sharpe {stats["sharpe"]:.2f}'
+                 f' | 最大回撤 {stats["max_drawdown"]:.1%}'
+                 f' | 胜率 {stats["win_rate"]:.0%}</span>',
+            font=dict(size=16, color='#1e293b'),
+            x=0.01,
+        ),
+        height=480,
+        margin=dict(t=60, b=25, l=55, r=20),
+        paper_bgcolor='white',
+        plot_bgcolor='#fafbfc',
+        font=dict(family='-apple-system, "Microsoft YaHei", sans-serif', size=11, color='#475569'),
+        legend=dict(
+            orientation='h', y=1.08, x=1, xanchor='right',
+            font=dict(size=11), bgcolor='rgba(255,255,255,0)',
+        ),
+        hovermode='x unified',
+        hoverlabel=dict(bgcolor='white', bordercolor='#e2e8f0', font=dict(size=12)),
+    )
+
+    # 上图Y轴
+    fig.update_yaxes(
+        title_text='净值', gridcolor='#f1f5f9', zeroline=False,
+        tickformat='.2f', row=1, col=1,
+    )
+    # 上图X轴
+    fig.update_xaxes(gridcolor='#f1f5f9', row=1, col=1)
+
+    # 下图Y轴 (回撤)
+    fig.update_yaxes(
+        title_text='回撤%', gridcolor='#f1f5f9', zeroline=False,
+        tickformat='.0f', row=2, col=1,
+    )
+    # 下图X轴
+    fig.update_xaxes(
+        gridcolor='#f1f5f9',
+        tickformat='%m-%d',
+        row=2, col=1,
     )
 
     return fig.to_html(full_html=False, include_plotlyjs=False)
