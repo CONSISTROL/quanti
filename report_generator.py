@@ -443,9 +443,10 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     <table style="margin-bottom:20px;">
     <thead><tr>
         <th>日期</th><th>方向</th><th>代码</th><th>名称</th>
-        <th>价格</th><th>数量</th><th>金额</th><th>盈亏</th><th>累计收益</th><th>原因</th>
+        <th>价格</th><th>数量</th><th>金额</th><th>盈亏</th><th>累计</th><th>总市值</th><th>仓位</th><th>原因</th>
     </tr></thead>
     <tbody>""")
+            held = {}  # 跟踪持仓
             for t in trades:
                 dir_css = 'color:#27ae60;font-weight:600;' if t.direction == 'BUY' else 'color:#e74c3c;font-weight:600;'
                 dir_label = '买入' if t.direction == 'BUY' else '卖出'
@@ -453,11 +454,18 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 pnl_css = ''
                 if t.direction == 'SELL':
                     pnl_css = 'color:#27ae60;' if t.pnl_pct > 0 else 'color:#e74c3c;'
-                # 累计收益
+                # 更新持仓
+                if t.direction == 'BUY':
+                    held[t.code] = (t.shares, t.price)
+                else:
+                    held.pop(t.code, None)
+                # 累计收益 + 总市值 + 仓位
                 d_short = t.date.strftime('%m-%d')
                 nav = date_nav.get(d_short, init_cap)
                 cum = (nav / init_cap - 1) if init_cap > 0 else 0
                 cum_css = 'color:#27ae60;font-weight:600;' if cum >= 0 else 'color:#e74c3c;font-weight:600;'
+                held_val = sum(s * p for s, p in held.values())
+                pos_ratio = held_val / nav if nav > 0 else 0
                 html_parts.append(f"""<tr>
                     <td>{t.date.strftime('%m-%d')}</td>
                     <td style="{dir_css}">{dir_label}</td>
@@ -468,6 +476,8 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                     <td>¥{t.amount:,.0f}</td>
                     <td style="{pnl_css}font-weight:600;">{pnl_str}</td>
                     <td style="{cum_css}">{cum:+.1%}</td>
+                    <td>¥{nav:,.0f}</td>
+                    <td>{pos_ratio:.0%}</td>
                     <td>{t.reason}</td>
                 </tr>""")
             html_parts.append("</tbody></table>")

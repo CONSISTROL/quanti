@@ -12,6 +12,7 @@
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from datetime import datetime, timedelta
 
 import plotly.graph_objects as go
@@ -375,7 +376,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         # 限制在5%-30%之间
         return max(0.05, min(0.30, kelly))
 
-    for day_idx, today in enumerate(trading_dates):
+    for day_idx, today in enumerate(tqdm(trading_dates, desc="  回测进度", ncols=80, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')):
         # ---- 1. 检查持仓, 判断是否卖出 ----
         to_sell = []
         for pos in positions:
