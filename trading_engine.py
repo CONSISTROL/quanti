@@ -148,8 +148,8 @@ def check_buy_signal(ind):
     if cross != 1:
         return False, 0, ''
 
-    # ---- 超卖区 (K<35) ----
-    if k > 35:
+    # ---- 超卖区 ----
+    if k > 50:
         return False, 0, ''
 
     if k < 15:
@@ -158,9 +158,12 @@ def check_buy_signal(ind):
     elif k < 25:
         score += 4
         reasons.append(f'超卖金叉(K={k:.0f})')
-    else:
+    elif k < 35:
         score += 3
         reasons.append(f'低位金叉(K={k:.0f})')
+    else:
+        score += 2
+        reasons.append(f'中位金叉(K={k:.0f})')
 
     # J值加分
     if j < -10:
@@ -446,7 +449,16 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 ind = compute_indicators(closes, volumes_arr, highs_arr, lows_arr)
                 is_buy, score, reason = check_buy_signal(ind)
 
-                if is_buy and score >= min_buy_score:
+                # 龙头加分: 综合排名TOP10额外+2分
+                if scored_df is not None and 'code' in scored_df.columns:
+                    match = scored_df[scored_df['code'].astype(str).str.zfill(6) == code]
+                    if not match.empty:
+                        rank = int(match.iloc[0].get('rank', 999))
+                        if rank <= 10:
+                            score += 2
+                            reason += '+龙头TOP10' if reason else '龙头TOP10'
+
+                if score >= min_buy_score and ind['skdj_cross'] == 1:
                     # 获取名称
                     name = ''
                     if scored_df is not None and 'code' in scored_df.columns:
@@ -471,9 +483,9 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     code, name, 'BUY', buy_price, today, shares, amount, reason
                 ))
 
-        # ---- 2b. 动态龙头发现: 每5天扫描一次,找极强SKDJ信号 ----
+        # ---- 2b. 动态龙头发现: 每天扫描,预过滤加速 ----
         available_slots = max_positions - len(positions)
-        if available_slots > 0 and cash > initial_capital * 0.05 and day_idx % 5 == 0:
+        if available_slots > 0 and cash > initial_capital * 0.05:
             wildcard_candidates = []
             held_codes = {p.code for p in positions}
 
@@ -492,11 +504,14 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     continue
                 idx = mask.sum() - 1
                 c = hist['close'].values.astype(float)[:idx+1]
+                if len(c) < 120:
+                    continue
+                # 预过滤: 近5日必须有回调,否则SKDJ不可能超卖 (跳过80%+的股票)
+                if len(c) >= 6 and c[-1] / c[-6] > 0.99:
+                    continue
                 v = hist['volume'].values.astype(float)[:idx+1] if 'volume' in hist.columns else None
                 h = hist['high'].values.astype(float)[:idx+1] if 'high' in hist.columns else None
                 l = hist['low'].values.astype(float)[:idx+1] if 'low' in hist.columns else None
-                if len(c) < 120:
-                    continue
 
                 ind = compute_indicators(c, v, h, l)
                 k = ind['skdj_k']
@@ -506,10 +521,10 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 vr = ind.get('vol_ratio', 1.0)
 
                 # 极强信号: SKDJ超卖金叉 + 均线多头 + 缩量
-                if (cross == 1 and k < 20
+                if (cross == 1 and k < 30
                         and not np.isnan(ma60) and c[-1] > ma60
                         and not np.isnan(ma120) and c[-1] > ma120
-                        and vr < 0.8):
+                        and vr < 0.9):
                     nm = ''
                     if scored_df is not None and 'code' in scored_df.columns:
                         mt = scored_df[scored_df['code'].astype(str).str.zfill(6) == code]
