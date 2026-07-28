@@ -432,12 +432,18 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
 
         # 操作记录表
         if trades:
+            # 日期→净值映射
+            date_nav = {}
+            init_cap = trade_result['initial_capital']
+            for d, v in trade_result.get('equity_curve', []):
+                date_nav[pd.Timestamp(d).strftime('%m-%d')] = v
+
             html_parts.append("""
     <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 操作记录</h2>
     <table style="margin-bottom:20px;">
     <thead><tr>
         <th>日期</th><th>方向</th><th>代码</th><th>名称</th>
-        <th>价格</th><th>数量</th><th>金额</th><th>盈亏</th><th>原因</th>
+        <th>价格</th><th>数量</th><th>金额</th><th>盈亏</th><th>累计收益</th><th>原因</th>
     </tr></thead>
     <tbody>""")
             for t in trades:
@@ -447,6 +453,11 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 pnl_css = ''
                 if t.direction == 'SELL':
                     pnl_css = 'color:#27ae60;' if t.pnl_pct > 0 else 'color:#e74c3c;'
+                # 累计收益
+                d_short = t.date.strftime('%m-%d')
+                nav = date_nav.get(d_short, init_cap)
+                cum = (nav / init_cap - 1) if init_cap > 0 else 0
+                cum_css = 'color:#27ae60;font-weight:600;' if cum >= 0 else 'color:#e74c3c;font-weight:600;'
                 html_parts.append(f"""<tr>
                     <td>{t.date.strftime('%m-%d')}</td>
                     <td style="{dir_css}">{dir_label}</td>
@@ -456,6 +467,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                     <td>{t.shares}</td>
                     <td>¥{t.amount:,.0f}</td>
                     <td style="{pnl_css}font-weight:600;">{pnl_str}</td>
+                    <td style="{cum_css}">{cum:+.1%}</td>
                     <td>{t.reason}</td>
                 </tr>""")
             html_parts.append("</tbody></table>")
@@ -465,19 +477,33 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
             html_parts.append("""
     <h2 style="margin:24px 0 12px;color:#1a1a2e;">📦 当前持仓建议</h2>
     <table style="margin-bottom:20px;">
-    <thead><tr><th>代码</th><th>名称</th><th>成本价</th><th>数量</th><th>投入资金</th><th>占比</th></tr></thead>
+    <thead><tr><th>代码</th><th>名称</th><th>成本价</th><th>现价</th><th>数量</th><th>浮动盈亏</th><th>盈亏%</th><th>投入资金</th></tr></thead>
     <tbody>""")
-            total_value = sum(p.capital for p in trade_result['final_positions'])
+            total_float = 0
             for pos in trade_result['final_positions']:
-                pct = pos.capital / stats['initial_capital'] * 100
+                cur = getattr(pos, '_last_price', pos.entry_price)
+                fpnl = (cur - pos.entry_price) * pos.shares
+                fpct = (cur / pos.entry_price - 1) if pos.entry_price > 0 else 0
+                total_float += fpnl
+                css = 'color:#10b981;font-weight:600;' if fpnl >= 0 else 'color:#ef4444;font-weight:600;'
+                sign = '+' if fpnl >= 0 else ''
                 html_parts.append(f"""<tr>
                     <td><strong>{pos.code}</strong></td>
                     <td>{pos.name}</td>
                     <td>¥{pos.entry_price:.2f}</td>
+                    <td>¥{cur:.2f}</td>
                     <td>{pos.shares}</td>
+                    <td style="{css}">{sign}¥{fpnl:,.0f}</td>
+                    <td style="{css}">{sign}{fpct:.1%}</td>
                     <td>¥{pos.capital:,.0f}</td>
-                    <td>{pct:.1f}%</td>
                 </tr>""")
+            total_css = 'color:#10b981;font-weight:600;' if total_float >= 0 else 'color:#ef4444;font-weight:600;'
+            total_sign = '+' if total_float >= 0 else ''
+            html_parts.append(f"""<tr style="border-top:2px solid #e2e8f0;font-weight:600;">
+                <td colspan="5">合计浮动盈亏</td>
+                <td style="{total_css}">{total_sign}¥{total_float:,.0f}</td>
+                <td colspan="2"></td>
+            </tr>""")
             html_parts.append("</tbody></table>")
 
     # === 详细表格 ===

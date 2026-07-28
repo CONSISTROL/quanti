@@ -506,8 +506,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 c = hist['close'].values.astype(float)[:idx+1]
                 if len(c) < 120:
                     continue
-                # 预过滤: 近5日必须有回调,否则SKDJ不可能超卖 (跳过80%+的股票)
-                if len(c) >= 6 and c[-1] / c[-6] > 0.99:
+                # 预过滤: 近5日涨幅>3%的跳过(这类股SKDJ不太可能超卖)
+                if len(c) >= 6 and c[-1] / c[-6] > 1.03:
                     continue
                 v = hist['volume'].values.astype(float)[:idx+1] if 'volume' in hist.columns else None
                 h = hist['high'].values.astype(float)[:idx+1] if 'high' in hist.columns else None
@@ -615,6 +615,22 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         'max_positions': max_positions,
     }
 
+    # 给持仓补充最新价格
+    for pos in positions:
+        sina = pure_to_sina.get(pos.code)
+        if sina:
+            hist = history_dict.get(sina)
+            if hist is not None:
+                last_mask = hist['date'] <= trading_dates[-1]
+                if last_mask.sum() > 0:
+                    pos._last_price = hist['close'].values[last_mask.sum() - 1]
+                else:
+                    pos._last_price = pos.entry_price
+            else:
+                pos._last_price = pos.entry_price
+        else:
+            pos._last_price = pos.entry_price
+
     return {
         'trades': trades,
         'equity_curve': equity_curve,
@@ -653,24 +669,46 @@ def print_trade_summary(result):
     print(f"  交易天数:   {stats['trading_days']:>12d} 天")
     print("═" * 70)
 
-    # 操作记录
+    # 操作记录 (含累计收益)
     print(f"\n  📋 操作记录 (共 {len(trades)} 笔):\n")
     print(f"  {'日期':>12} {'方向':>4} {'代码':<8} {'名称':<8} "
-          f"{'价格':>8} {'数量':>6} {'金额':>10} {'盈亏':>7}  原因")
-    print("  " + "─" * 95)
+          f"{'价格':>8} {'数量':>6} {'金额':>10} {'盈亏':>7} {'累计':>8}  原因")
+    print("  " + "─" * 105)
+
+    # 构建日期→净值映射 (用于累计收益)
+    date_nav = {}
+    initial = result['initial_capital']
+    for d, v in result.get('equity_curve', []):
+        date_nav[pd.Timestamp(d).strftime('%Y-%m-%d')] = v
 
     for t in trades:
         dir_label = '🟢买入' if t.direction == 'BUY' else '🔴卖出'
         pnl_str = f'{t.pnl_pct:+.1%}' if t.direction == 'SELL' else ''
-        print(f"  {t.date.strftime('%Y-%m-%d'):>12} {dir_label:>4} {t.code:<8} {t.name:<8} "
-              f"{t.price:>8.2f} {t.shares:>6d} {t.amount:>10,.0f} {pnl_str:>7}  {t.reason}")
+        # 累计收益
+        d_str = t.date.strftime('%Y-%m-%d')
+        nav_val = date_nav.get(d_str, initial)
+        cum_ret = (nav_val / initial - 1) if initial > 0 else 0
+        cum_str = f'{cum_ret:+.1%}'
+        print(f"  {d_str:>12} {dir_label:>4} {t.code:<8} {t.name:<8} "
+              f"{t.price:>8.2f} {t.shares:>6d} {t.amount:>10,.0f} {pnl_str:>7} {cum_str:>8}  {t.reason}")
 
-    # 当前持仓
+    # 当前持仓 (含浮动收益)
     if result['final_positions']:
         print(f"\n  📦 当前持仓 ({len(result['final_positions'])} 只):")
+        print(f"    {'代码':<8} {'名称':<8} {'成本':>8} {'现价':>8} {'持股':>6} {'浮动盈亏':>10} {'盈亏%':>8} {'投入':>12}")
+        print("    " + "─" * 80)
+        total_float_pnl = 0
         for pos in result['final_positions']:
-            print(f"    {pos.code} {pos.name} | 买入价 {pos.entry_price:.2f} | "
-                  f"{pos.shares}股 | 投入 ¥{pos.capital:,.0f}")
+            current_price = getattr(pos, '_last_price', pos.entry_price)
+            float_pnl = (current_price - pos.entry_price) * pos.shares
+            float_pct = (current_price / pos.entry_price - 1) if pos.entry_price > 0 else 0
+            pnl_css = '+' if float_pct >= 0 else ''
+            total_float_pnl += float_pnl
+            print(f"    {pos.code:<8} {pos.name:<8} {pos.entry_price:>8.2f} {current_price:>8.2f} "
+                  f"{pos.shares:>6d} {pnl_css}{float_pnl:>9,.0f} {pnl_css}{float_pct:>7.1%} ¥{pos.capital:>10,.0f}")
+        print("    " + "─" * 80)
+        total_css = '+' if total_float_pnl >= 0 else ''
+        print(f"    {'合计浮动盈亏:':>34} {total_css}¥{total_float_pnl:,.0f}")
 
     print("\n  ⚠️  回测基于历史数据，不代表未来表现。投资有风险，入市需谨慎。")
     print()
