@@ -357,7 +357,23 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     trades = []     # [TradeRecord, ...]
     equity_curve = []
     max_profit_tracker = {}  # {code: max_profit_seen}
-    cooldown = {}  # {code: sell_date} — 卖出后冷却5天不买回
+    cooldown = {}  # {code: sell_date} — 卖出后冷却期
+
+    # 凯利公式参数
+    kelly_mode = config.get('kelly_mode', False)
+    kelly_wins = []
+    kelly_losses = []
+
+    def calc_kelly_fraction():
+        """根据已有交易动态计算凯利值"""
+        if len(kelly_wins) < 3 or len(kelly_losses) < 3:
+            return position_pct  # 交易太少,用默认值
+        p = len(kelly_wins) / (len(kelly_wins) + len(kelly_losses))
+        q = 1 - p
+        b = np.mean(kelly_wins) / abs(np.mean(kelly_losses)) if np.mean(kelly_losses) != 0 else 1
+        kelly = (b * p - q) / b if b > 0 else 0
+        # 限制在5%-30%之间
+        return max(0.05, min(0.30, kelly))
 
     for day_idx, today in enumerate(trading_dates):
         # ---- 1. 检查持仓, 判断是否卖出 ----
@@ -411,6 +427,13 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             positions.remove(pos)
             cooldown[pos.code] = today  # 卖出后冷却
             max_profit_tracker.pop(pos.code, None)
+
+            # 凯利公式: 记录盈亏
+            if kelly_mode:
+                if pnl_pct > 0:
+                    kelly_wins.append(pnl_pct)
+                else:
+                    kelly_losses.append(pnl_pct)
 
         # ---- 2. 扫描买入信号 ----
         available_slots = max_positions - len(positions)
@@ -470,7 +493,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             # 按信号强度排序, 买入前 available_slots 个
             buy_candidates.sort(key=lambda x: x[3], reverse=True)
             for code, name, buy_price, score, reason in buy_candidates[:available_slots]:
-                alloc = cash * position_pct
+                alloc = cash * (calc_kelly_fraction() if kelly_mode else position_pct)
                 if alloc < buy_price * 100:  # 至少买1手
                     continue
                 shares = int(alloc / buy_price / 100) * 100  # 整手
@@ -534,7 +557,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     wildcard_candidates.append((code, nm, c[-1], 10, reason))
 
             for code, name, buy_price, score, reason in wildcard_candidates[:available_slots]:
-                alloc = cash * position_pct
+                alloc = cash * (calc_kelly_fraction() if kelly_mode else position_pct)
                 if alloc < buy_price * 100:
                     continue
                 shares = int(alloc / buy_price / 100) * 100
@@ -669,28 +692,45 @@ def print_trade_summary(result):
     print(f"  交易天数:   {stats['trading_days']:>12d} 天")
     print("═" * 70)
 
-    # 操作记录 (含累计收益)
+    # 操作记录 (含累计收益+总市值+仓位)
     print(f"\n  📋 操作记录 (共 {len(trades)} 笔):\n")
     print(f"  {'日期':>12} {'方向':>4} {'代码':<8} {'名称':<8} "
-          f"{'价格':>8} {'数量':>6} {'金额':>10} {'盈亏':>7} {'累计':>8}  原因")
-    print("  " + "─" * 105)
+          f"{'价格':>8} {'数量':>6} {'金额':>10} {'盈亏':>7} {'累计':>7} {'总市值':>10} {'仓位':>6}  原因")
+    print("  " + "─" * 115)
 
-    # 构建日期→净值映射 (用于累计收益)
+    # 构建日期→净值映射
     date_nav = {}
     initial = result['initial_capital']
     for d, v in result.get('equity_curve', []):
         date_nav[pd.Timestamp(d).strftime('%Y-%m-%d')] = v
 
+    # 跟踪持仓数以计算仓位
+    current_held = {}  # {code: (shares, entry_price)}
+
     for t in trades:
         dir_label = '🟢买入' if t.direction == 'BUY' else '🔴卖出'
         pnl_str = f'{t.pnl_pct:+.1%}' if t.direction == 'SELL' else ''
-        # 累计收益
+
+        # 更新持仓跟踪
+        if t.direction == 'BUY':
+            current_held[t.code] = (t.shares, t.price)
+        else:
+            current_held.pop(t.code, None)
+
+        # 当前总市值 = 现金 + 持仓市值
+        held_value = sum(s * p for s, p in current_held.values())
+        # 用equity_curve的净值更准确
         d_str = t.date.strftime('%Y-%m-%d')
-        nav_val = date_nav.get(d_str, initial)
-        cum_ret = (nav_val / initial - 1) if initial > 0 else 0
+        total_value = date_nav.get(d_str, initial)
+        position_ratio = held_value / total_value if total_value > 0 else 0
+
+        cum_ret = (total_value / initial - 1) if initial > 0 else 0
         cum_str = f'{cum_ret:+.1%}'
+        pos_str = f'{position_ratio:.0%}'
+
         print(f"  {d_str:>12} {dir_label:>4} {t.code:<8} {t.name:<8} "
-              f"{t.price:>8.2f} {t.shares:>6d} {t.amount:>10,.0f} {pnl_str:>7} {cum_str:>8}  {t.reason}")
+              f"{t.price:>8.2f} {t.shares:>6d} {t.amount:>10,.0f} {pnl_str:>7} {cum_str:>7} "
+              f"¥{total_value:>8,.0f} {pos_str:>5}  {t.reason}")
 
     # 当前持仓 (含浮动收益)
     if result['final_positions']:
