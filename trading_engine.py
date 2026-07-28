@@ -126,121 +126,105 @@ def compute_indicators(closes, volumes=None, highs=None, lows=None):
 
 def check_buy_signal(ind):
     """
-    买入信号判断 — 返回 (is_buy, score, reason)
+    超短线反弹买入信号 v3 — 返回 (is_buy, score, reason)
 
-    核心逻辑 (优化版):
-    1. 趋势必须向上: 价格 > MA20 > MA60
-    2. MACD: 必须金叉或柱状线为正且扩大
-    3. SKDJ: 不在超买区(K<75), 低位金叉加分
-    4. 量价配合: 放量上涨加分, 缩量扣分
-    5. 近期动量正向: 20日收益 > 0
+    核心: 极度超跌 + 反转确认 + 大盘配合
+    只在最确定的机会入场, 追求高胜率
     """
     score = 0
     reasons = []
 
-    # 条件1: 趋势 — 必须站上MA20且MA20>MA60
-    ma20 = ind.get('ma20', 0)
-    ma60 = ind.get('ma60', 0)
     price = ind.get('close', 0)
-
-    if price <= 0 or np.isnan(ma20) or np.isnan(ma60):
+    if price <= 0:
         return False, 0, ''
 
-    if price > ma20 > ma60:
+    # 条件1: 长期趋势必须向上 (MA120之上)
+    ma120 = ind.get('ma120', 0)
+    if np.isnan(ma120) or price < ma120 * 0.95:
+        return False, 0, ''
+
+    # 条件2: 短期超跌 (5日跌幅要大)
+    ret_5d = ind.get('ret_5d', 0)
+    if ret_5d < -0.05:
+        score += 4
+        reasons.append(f'深度超跌{ret_5d:.1%}')
+    elif ret_5d < -0.03:
         score += 2
-        reasons.append('均线多头')
+        reasons.append(f'超跌{ret_5d:.1%}')
     else:
-        return False, 0, ''  # 必须均线多头排列
+        return False, 0, ''  # 跌幅不够不买
 
-    # 条件2: MACD — 金叉强信号
-    if ind['macd_cross'] == 1:
-        score += 3
-        reasons.append('MACD金叉')
-    elif ind['macd_hist'] > 0:
-        score += 1
-        reasons.append('MACD多头')
-    else:
-        return False, 0, ''  # MACD空头不买
-
-    # 条件3: SKDJ — 低位金叉加分, 超买扣分
+    # 条件3: SKDJ极度超卖 + 金叉确认反转
     k = ind['skdj_k']
-    if ind['skdj_cross'] == 1 and k < 50:
+    j = ind['skdj_j']
+    if ind['skdj_cross'] == 1 and k < 20:
+        score += 4
+        reasons.append(f'SKDJ极度超卖金叉(K={k:.0f})')
+    elif ind['skdj_cross'] == 1 and k < 35:
+        score += 3
+        reasons.append(f'SKDJ超卖金叉(K={k:.0f})')
+    elif j < 0 and k < 20:
         score += 2
-        reasons.append('SKDJ低位金叉')
-    elif ind['skdj_cross'] == 1 and k < 70:
+        reasons.append(f'J值极度超卖(J={j:.0f})')
+    elif k < 25:
         score += 1
-        reasons.append('SKDJ金叉')
-    elif k > 80:
-        score -= 2
-        reasons.append('SKDJ超买')
-    elif ind['skdj_cross'] == -1 and k > 60:
-        score -= 1
+        reasons.append(f'SKDJ低位(K={k:.0f})')
+    else:
+        return False, 0, ''  # SKDJ没到超卖区不买
 
-    # 条件4: 成交量 — 放量确认
-    if ind['vol_ratio'] > 1.3:
+    # 条件4: 缩量 (卖压衰竭, 必须确认)
+    vol_ratio = ind.get('vol_ratio', 1.0)
+    if vol_ratio < 0.6:
+        score += 3
+        reasons.append(f'极度缩量({vol_ratio:.1f}x)')
+    elif vol_ratio < 0.8:
+        score += 2
+        reasons.append(f'缩量({vol_ratio:.1f}x)')
+    elif vol_ratio < 1.0:
         score += 1
-        reasons.append('放量')
-    elif ind['vol_ratio'] < 0.5:
-        score -= 1
-        reasons.append('缩量')
+        reasons.append(f'温和缩量({vol_ratio:.1f}x)')
+    else:
+        score -= 1  # 放量下跌不好
 
-    # 条件5: 动量 — 要求正向
-    if ind['ret_20d'] > 0.05:
+    # 条件5: 反弹迹象 (今日收阳或昨日收阳)
+    ma5 = ind.get('ma5', 0)
+    if not np.isnan(ma5) and price > ma5:
         score += 1
-        reasons.append('20日涨5%+')
-    elif ind['ret_20d'] > 0:
-        score += 0.5
-    elif ind['ret_20d'] < -0.05:
-        score -= 2
-        reasons.append('近期下跌')
+        reasons.append('站上MA5')
 
-    # 波动率惩罚
-    if ind['volatility'] > 0.6:
-        score -= 1
+    # 条件6: 支撑位 (MA60附近)
+    ma60 = ind.get('ma60', 0)
+    if not np.isnan(ma60) and ma60 > 0:
+        dist = (price - ma60) / ma60
+        if -0.02 < dist < 0.02:
+            score += 2
+            reasons.append('MA60支撑')
+        elif dist > 0.02:
+            score += 1
 
-    # 提高门槛: 需要 >= 6分
-    is_buy = score >= 6
+    # 高门槛: 需要 >= 9分
+    is_buy = score >= 9
     return is_buy, score, '+'.join(reasons)
 
 
 def check_sell_signal(ind, entry_price, holding_days, max_profit_seen=0):
     """
-    卖出信号判断 — 返回 (is_sell, reason)
-
-    卖出条件 (任一触发):
-    1. 硬止损: 亏损 >= 7%
-    2. 止盈: 盈利 >= 25%
-    3. 移动止盈: 盈利曾超过10%后回落至盈利5%以下
-    4. 时间止损: 持有超过15天且收益为负
-    5. MACD零轴下方死叉 (强卖出)
-    6. 放量下跌 (量比>2且5日跌幅>5%)
+    超短线卖出信号 — 快进快出
+    1. 止盈: 盈利 >= 3%
+    2. 止损: 亏损 >= 2%
+    3. 到期: 持有 >= 4天
     """
     price = ind.get('close', 0)
     pnl = (price / entry_price - 1) if entry_price > 0 else 0
 
-    # 1. 硬止损
-    if pnl <= -0.10:
-        return True, f'止损({pnl:.1%})'
-
-    # 2. 止盈
-    if pnl >= 0.25:
+    if pnl >= 0.03:
         return True, f'止盈({pnl:.1%})'
 
-    # 3. 移动止盈: 曾盈利>10%但回落到5%以下
-    if max_profit_seen > 0.10 and pnl < 0.05:
-        return True, f'移动止盈(曾涨{max_profit_seen:.1%},现{pnl:.1%})'
+    if pnl <= -0.02:
+        return True, f'止损({pnl:.1%})'
 
-    # 4. 时间止损: 持有超20天且亏损
-    if holding_days > 20 and pnl < -0.03:
-        return True, f'时间止损({holding_days}天{pnl:.1%})'
-
-    # 5. MACD零轴下方死叉 (趋势恶化)
-    if ind['macd_cross'] == -1 and ind['dif'] < 0:
-        return True, 'MACD零轴下死叉'
-
-    # 6. 放量下跌
-    if ind['vol_ratio'] > 2.0 and ind['ret_5d'] < -0.05:
-        return True, f'放量下跌(量比{ind["vol_ratio"]:.1f}x)'
+    if holding_days >= 4:
+        return True, f'到期({holding_days}天{pnl:+.1%})'
 
     return False, ''
 
@@ -425,7 +409,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 if code in cooldown:
                     sell_date = cooldown[code]
                     days_since_sell = sum(1 for d in trading_dates if sell_date < d <= today)
-                    if days_since_sell < 10:
+                    if days_since_sell < 2:
                         continue
                 sina = pure_to_sina.get(code)
                 if not sina:
