@@ -193,7 +193,7 @@ def check_buy_signal(ind):
         score += 1
         reasons.append('长期↑')
 
-    is_buy = score >= 7
+    is_buy = score >= 6
     return is_buy, score, '+'.join(reasons)
 
 
@@ -215,7 +215,7 @@ def check_sell_signal(ind, entry_price, holding_days, max_profit_seen=0):
     if cross == -1 and k > 65:
         return True, f'SKDJ超买死叉(K={k:.0f})'
 
-    if pnl >= 0.05:
+    if pnl >= 0.08:
         return True, f'止盈({pnl:.1%})'
 
     if pnl <= -0.03:
@@ -224,7 +224,7 @@ def check_sell_signal(ind, entry_price, holding_days, max_profit_seen=0):
     if j > 100 and pnl > 0:
         return True, f'J超买(J={j:.0f},{pnl:+.1%})'
 
-    if holding_days >= 8:
+    if holding_days >= 20:
         return True, f'到期({holding_days}天{pnl:+.1%})'
 
     return False, ''
@@ -307,18 +307,30 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 break
         pure_to_sina[code.zfill(6)] = sina_code
 
-    # 获取候选股票列表 — 只取打分排名前50的龙头股
+    # 获取候选股票列表 — 综合排名TOP30 + 动量排名TOP30 (捕捉技术面龙头)
     candidate_codes = []
+    candidate_set = set()
     if scored_df is not None and 'code' in scored_df.columns:
-        for _, row in scored_df.head(50).iterrows():
+        # 综合排名TOP30 (基本面龙头)
+        for _, row in scored_df.head(30).iterrows():
             code = str(row['code']).zfill(6)
-            if code in pure_to_sina:
+            if code in pure_to_sina and code not in candidate_set:
                 candidate_codes.append(code)
+                candidate_set.add(code)
+
+        # 动量排名TOP30 (技术面龙头 — 近期涨得最猛的)
+        if 'momentum_score' in scored_df.columns:
+            momentum_ranked = scored_df.sort_values('momentum_score', ascending=False)
+            for _, row in momentum_ranked.head(30).iterrows():
+                code = str(row['code']).zfill(6)
+                if code in pure_to_sina and code not in candidate_set:
+                    candidate_codes.append(code)
+                    candidate_set.add(code)
 
     if not candidate_codes:
-        candidate_codes = list(pure_to_sina.keys())[:50]
+        candidate_codes = list(pure_to_sina.keys())[:60]
 
-    print(f"  龙头候选: {len(candidate_codes)} 只 (TOP 50)")
+    print(f"  龙头候选: {len(candidate_codes)} 只 (综合TOP30 + 动量TOP30)")
 
     # 找共同交易日
     all_dates = set()
@@ -450,6 +462,67 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 if alloc < buy_price * 100:  # 至少买1手
                     continue
                 shares = int(alloc / buy_price / 100) * 100  # 整手
+                if shares <= 0:
+                    continue
+                amount = shares * buy_price
+                cash -= amount
+                positions.append(Position(code, name, buy_price, today, shares, amount))
+                trades.append(TradeRecord(
+                    code, name, 'BUY', buy_price, today, shares, amount, reason
+                ))
+
+        # ---- 2b. 动态龙头发现: 每5天扫描一次,找极强SKDJ信号 ----
+        available_slots = max_positions - len(positions)
+        if available_slots > 0 and cash > initial_capital * 0.05 and day_idx % 5 == 0:
+            wildcard_candidates = []
+            held_codes = {p.code for p in positions}
+
+            for code, sina in pure_to_sina.items():
+                if code in held_codes or code in candidate_set:
+                    continue
+                if code in cooldown:
+                    sell_date = cooldown[code]
+                    if sum(1 for d in trading_dates if sell_date < d <= today) < 3:
+                        continue
+                hist = history_dict.get(sina)
+                if hist is None:
+                    continue
+                mask = hist['date'] <= today
+                if mask.sum() < 120:
+                    continue
+                idx = mask.sum() - 1
+                c = hist['close'].values.astype(float)[:idx+1]
+                v = hist['volume'].values.astype(float)[:idx+1] if 'volume' in hist.columns else None
+                h = hist['high'].values.astype(float)[:idx+1] if 'high' in hist.columns else None
+                l = hist['low'].values.astype(float)[:idx+1] if 'low' in hist.columns else None
+                if len(c) < 120:
+                    continue
+
+                ind = compute_indicators(c, v, h, l)
+                k = ind['skdj_k']
+                cross = ind['skdj_cross']
+                ma60 = ind.get('ma60', 0)
+                ma120 = ind.get('ma120', 0)
+                vr = ind.get('vol_ratio', 1.0)
+
+                # 极强信号: SKDJ超卖金叉 + 均线多头 + 缩量
+                if (cross == 1 and k < 20
+                        and not np.isnan(ma60) and c[-1] > ma60
+                        and not np.isnan(ma120) and c[-1] > ma120
+                        and vr < 0.8):
+                    nm = ''
+                    if scored_df is not None and 'code' in scored_df.columns:
+                        mt = scored_df[scored_df['code'].astype(str).str.zfill(6) == code]
+                        if not mt.empty:
+                            nm = str(mt.iloc[0].get('name', ''))
+                    reason = f'动态龙头:SKDJ金叉(K={k:.0f})+缩量({vr:.1f}x)+均线多头'
+                    wildcard_candidates.append((code, nm, c[-1], 10, reason))
+
+            for code, name, buy_price, score, reason in wildcard_candidates[:available_slots]:
+                alloc = cash * position_pct
+                if alloc < buy_price * 100:
+                    continue
+                shares = int(alloc / buy_price / 100) * 100
                 if shares <= 0:
                     continue
                 amount = shares * buy_price
