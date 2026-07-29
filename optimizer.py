@@ -3,6 +3,7 @@
 多进程网格搜索最优: 止损/止盈/持仓天数/买入门槛
 """
 
+import os
 import itertools
 import numpy as np
 import multiprocessing
@@ -11,11 +12,20 @@ from datetime import datetime
 
 def _run_single_backtest(args):
     """单个回测任务 (worker函数)"""
-    params, base_config, history_dict, scored_df, start_date, end_date, precomputed = args
+    params, base_config, history_dict, scored_df, start_date, end_date, precomputed_path = args
 
-    import io
+    import io, pickle
     from contextlib import redirect_stdout
     from trading_engine import run_swing_backtest
+
+    # 从文件加载预计算数据 (共享内存)
+    precomputed = None
+    if precomputed_path:
+        try:
+            with open(precomputed_path, 'rb') as f:
+                precomputed = pickle.load(f)
+        except Exception:
+            pass
 
     config = dict(base_config)
     config.update(params)
@@ -60,7 +70,7 @@ def optimize_strategy(history_dict, scored_df, base_config,
         workers: 并行进程数 (默认CPU核心数-1)
     """
     if workers is None:
-        workers = max(1, multiprocessing.cpu_count() - 1)
+        workers = min(4, max(1, multiprocessing.cpu_count() - 1))  # 限制最多4进程
 
     # 参数网格
     param_grid = {
@@ -77,11 +87,20 @@ def optimize_strategy(history_dict, scored_df, base_config,
     print(f"  回测区间: {start_date} ~ {end_date}")
     print(f"  {'─' * 70}")
 
+    # 保存预计算数据到临时文件 (worker共享)
+    import tempfile, pickle
+    precomputed_path = None
+    if precomputed:
+        precomputed_path = os.path.join(tempfile.gettempdir(), 'quant_optimizer_precomputed.pkl')
+        with open(precomputed_path, 'wb') as f:
+            pickle.dump(precomputed, f)
+        print(f"  📦 预计算数据已保存 ({os.path.getsize(precomputed_path)/1024/1024:.1f}MB)")
+
     # 构造任务列表
     tasks = []
     for combo in combos:
         params = dict(zip(keys, combo))
-        tasks.append((params, base_config, history_dict, scored_df, start_date, end_date, precomputed))
+        tasks.append((params, base_config, history_dict, scored_df, start_date, end_date, precomputed_path))
 
     # 并行执行
     from tqdm import tqdm
