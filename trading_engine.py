@@ -507,9 +507,9 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     code, name, 'BUY', buy_price, today, shares, amount, reason
                 ))
 
-        # ---- 2b. 动态龙头发现: 每天扫描,预过滤加速 ----
+        # ---- 2b. 动态龙头发现: 每3天扫描,预过滤加速 ----
         available_slots = max_positions - len(positions)
-        if available_slots > 0 and cash > initial_capital * 0.05:
+        if available_slots > 0 and cash > initial_capital * 0.05 and day_idx % 3 == 0:
             wildcard_candidates = []
             held_codes = {p.code for p in positions}
 
@@ -530,8 +530,12 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 c = hist['close'].values.astype(float)[:idx+1]
                 if len(c) < 120:
                     continue
-                # 预过滤: 近5日涨幅>3%的跳过(这类股SKDJ不太可能超卖)
-                if len(c) >= 6 and c[-1] / c[-6] > 1.03:
+                # 快速预过滤(n秒级): 近5日涨>2% 或 价格<MA120估计值 → 跳过
+                if len(c) >= 6 and c[-1] / c[-6] > 1.02:
+                    continue
+                # 快速估计MA120: 如果当前价 < 近120日均值的85%, 大概率在MA120下方
+                if len(c) >= 120 and c[-1] < np.mean(c[-120:]) * 0.85:
+                    continue
                     continue
                 v = hist['volume'].values.astype(float)[:idx+1] if 'volume' in hist.columns else None
                 h = hist['high'].values.astype(float)[:idx+1] if 'high' in hist.columns else None

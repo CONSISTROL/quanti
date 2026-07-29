@@ -44,8 +44,84 @@ def load_config():
     return config
 
 
+def run_optimization(config):
+    """运行参数优化"""
+    dt_cfg = config.get('data', {})
+    bt_cfg = config.get('backtest', {})
+    tr_cfg = config.get('trading', {})
+
+    print("╔══════════════════════════════════════════════════╗")
+    print("║        A股波段交易系统 — 参数优化模式            ║")
+    print("╚══════════════════════════════════════════════════╝")
+    print(f"  回测区间: {bt_cfg.get('start_date', '2025-01-01')} ~ {bt_cfg.get('end_date', '2026-07-27')}")
+    print()
+
+    # 数据采集
+    from data_fetcher import fetch_all_data
+    class Args: pass
+    args = Args()
+    args.cache_dir = 'cache'; args.no_cache = False; args.no_history = False
+    args.hist_days = dt_cfg.get('hist_days', 1200); args.workers = dt_cfg.get('workers', 8)
+    args.sleep = dt_cfg.get('sleep', 0.15); args.include_etf_lof = dt_cfg.get('include_etf_lof', False)
+    args.exclude_gem = dt_cfg.get('exclude_gem', False); args.exclude_star = dt_cfg.get('exclude_star', False)
+
+    print("━" * 52)
+    print("  📥 数据采集")
+    print("━" * 52)
+    data = fetch_all_data(args)
+
+    # 打分
+    from factor_model import calculate_all_factors, score_stocks
+    sc_cfg = config.get('scoring', {})
+    weights_str = sc_cfg.get('weights', '0.25,0.20,0.25,0.20,0.10')
+    w_vals = [float(x) for x in weights_str.split(',')]
+    if abs(sum(w_vals) - 1.0) > 0.01:
+        w_vals = [v / sum(w_vals) for v in w_vals]
+    weights = dict(zip(['value','growth','quality','momentum','risk'], w_vals))
+
+    factor_df = calculate_all_factors(
+        data['spot_filtered'], data['financial'], data['financial_prev'],
+        data['history'], data.get('sector_map',{}), data.get('asset_type_map',{}))
+    scored_df = score_stocks(factor_df, weights)
+
+    # 优化
+    from optimizer import optimize_strategy
+    results = optimize_strategy(
+        data['history'], scored_df, tr_cfg,
+        start_date=bt_cfg.get('start_date', '2025-01-01'),
+        end_date=bt_cfg.get('end_date', '2026-07-27'),
+    )
+
+    # 用最优参数运行一次完整回测
+    if results:
+        best = results[0]
+        print(f"\n  🏆 使用最优参数运行完整回测...")
+        best_config = dict(tr_cfg)
+        best_config.update(best['params'])
+
+        from trading_engine import run_swing_backtest, print_trade_summary
+        result = run_swing_backtest(
+            data['history'], scored_df, best_config,
+            start_date_str=bt_cfg.get('start_date', '2025-01-01'),
+            end_date_str=bt_cfg.get('end_date', '2026-07-27'),
+        )
+        if result:
+            print_trade_summary(result)
+
+            print(f"\n  📝 最优参数 (请更新 config.json):")
+            print(f'    "stop_loss": {best["params"]["stop_loss"]},')
+            print(f'    "take_profit": {best["params"]["take_profit"]},')
+            print(f'    "max_holding_days": {best["params"]["max_holding_days"]},')
+            print(f'    "min_buy_score": {best["params"]["min_buy_score"]}')
+
+
 def main():
     config = load_config()
+
+    # 检查是否运行参数优化
+    if '--optimize' in sys.argv:
+        run_optimization(config)
+        return
 
     # 读取配置
     dt_cfg = config.get('data', {})
