@@ -270,7 +270,7 @@ class TradeRecord:
 
 
 def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-01',
-                       end_date_str='2026-07-27'):
+                       end_date_str='2026-07-27', precomputed=None):
     """
     波段交易回测引擎
 
@@ -507,11 +507,13 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     code, name, 'BUY', buy_price, today, shares, amount, reason
                 ))
 
-        # ---- 2b. 动态龙头发现: 每3天扫描,预过滤加速 ----
+        # ---- 2b. 动态龙头发现: 有预计算时每天扫,无预计算时3天扫一次 ----
         available_slots = max_positions - len(positions)
-        if available_slots > 0 and cash > initial_capital * 0.05 and day_idx % 3 == 0:
+        scan_freq = 1 if precomputed else 3  # 有缓存天天扫,没缓存3天一次
+        if available_slots > 0 and cash > initial_capital * 0.05 and day_idx % scan_freq == 0:
             wildcard_candidates = []
             held_codes = {p.code for p in positions}
+            today_str = today.strftime('%Y-%m-%d')
 
             for code, sina in pure_to_sina.items():
                 if code in held_codes or code in candidate_set:
@@ -520,38 +522,56 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     sell_date = cooldown[code]
                     if sum(1 for d in trading_dates if sell_date < d <= today) < 3:
                         continue
-                hist = history_dict.get(sina)
-                if hist is None:
-                    continue
-                mask = hist['date'] <= today
-                if mask.sum() < 120:
-                    continue
-                idx = mask.sum() - 1
-                c = hist['close'].values.astype(float)[:idx+1]
-                if len(c) < 120:
-                    continue
-                # 快速预过滤(n秒级): 近5日涨>2% 或 价格<MA120估计值 → 跳过
-                if len(c) >= 6 and c[-1] / c[-6] > 1.02:
-                    continue
-                # 快速估计MA120: 如果当前价 < 近120日均值的85%, 大概率在MA120下方
-                if len(c) >= 120 and c[-1] < np.mean(c[-120:]) * 0.85:
-                    continue
-                    continue
-                v = hist['volume'].values.astype(float)[:idx+1] if 'volume' in hist.columns else None
-                h = hist['high'].values.astype(float)[:idx+1] if 'high' in hist.columns else None
-                l = hist['low'].values.astype(float)[:idx+1] if 'low' in hist.columns else None
 
-                ind = compute_indicators(c, v, h, l)
-                k = ind['skdj_k']
-                cross = ind['skdj_cross']
-                ma60 = ind.get('ma60', 0)
-                ma120 = ind.get('ma120', 0)
-                vr = ind.get('vol_ratio', 1.0)
+                # 使用预计算数据 (快)
+                if precomputed and code in precomputed:
+                    pdata = precomputed[code].get(today_str)
+                    if not pdata:
+                        continue
+                    k = pdata['k']
+                    cross = pdata['cross']
+                    ma60 = pdata['ma60']
+                    ma120 = pdata['ma120']
+                    vr = pdata['vol_ratio']
+                    close = pdata['close']
+                    ret5d = pdata['ret_5d']
+
+                    # 快速预过滤
+                    if ret5d > 0.02:
+                        continue
+                    if ma120 > 0 and close < ma120 * 0.85:
+                        continue
+                else:
+                    # 原始计算 (慢)
+                    hist = history_dict.get(sina)
+                    if hist is None:
+                        continue
+                    mask = hist['date'] <= today
+                    if mask.sum() < 120:
+                        continue
+                    idx = mask.sum() - 1
+                    c = hist['close'].values.astype(float)[:idx+1]
+                    if len(c) < 120:
+                        continue
+                    if len(c) >= 6 and c[-1] / c[-6] > 1.02:
+                        continue
+                    if len(c) >= 120 and c[-1] < np.mean(c[-120:]) * 0.85:
+                        continue
+                    v = hist['volume'].values.astype(float)[:idx+1] if 'volume' in hist.columns else None
+                    h = hist['high'].values.astype(float)[:idx+1] if 'high' in hist.columns else None
+                    l = hist['low'].values.astype(float)[:idx+1] if 'low' in hist.columns else None
+                    ind = compute_indicators(c, v, h, l)
+                    k = ind['skdj_k']
+                    cross = ind['skdj_cross']
+                    ma60 = ind.get('ma60', 0)
+                    ma120 = ind.get('ma120', 0)
+                    vr = ind.get('vol_ratio', 1.0)
+                    close = float(c[-1])
 
                 # 极强信号: SKDJ超卖金叉 + 均线多头 + 缩量
                 if (cross == 1 and k < 30
-                        and not np.isnan(ma60) and c[-1] > ma60
-                        and not np.isnan(ma120) and c[-1] > ma120
+                        and not np.isnan(ma60) and close > ma60
+                        and not np.isnan(ma120) and close > ma120
                         and vr < 0.9):
                     nm = ''
                     if scored_df is not None and 'code' in scored_df.columns:
@@ -559,7 +579,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                         if not mt.empty:
                             nm = str(mt.iloc[0].get('name', ''))
                     reason = f'动态龙头:SKDJ金叉(K={k:.0f})+缩量({vr:.1f}x)+均线多头'
-                    wildcard_candidates.append((code, nm, c[-1], 10, reason))
+                    wildcard_candidates.append((code, nm, close, 10, reason))
 
             for code, name, buy_price, score, reason in wildcard_candidates[:available_slots]:
                 alloc = cash * (calc_kelly_fraction() if kelly_mode else position_pct)

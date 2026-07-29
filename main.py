@@ -16,6 +16,7 @@ A股波段交易系统 v4.0
 import sys
 import os
 import json
+import pandas as pd
 from datetime import datetime
 
 
@@ -86,10 +87,36 @@ def run_optimization(config):
 
     # 优化
     from optimizer import optimize_strategy
+    from indicator_cache import precompute_all_indicators
+    from data_fetcher import _code_pure
+
+    # 预计算指标
+    pure_to_sina = {}
+    for s in data['history']:
+        pure_to_sina[_code_pure(s)] = s
+
+    start_dt = pd.Timestamp(bt_cfg.get('start_date', '2025-01-01'))
+    end_dt = pd.Timestamp(bt_cfg.get('end_date', '2026-07-27'))
+    all_dates = set()
+    for hist in data['history'].values():
+        if hist is not None and 'date' in hist.columns:
+            for d in hist['date'].values:
+                ts = pd.Timestamp(d)
+                if start_dt <= ts <= end_dt:
+                    all_dates.add(ts)
+    trading_dates = sorted(all_dates)
+
+    precomputed = precompute_all_indicators(
+        data['history'], pure_to_sina, trading_dates,
+        start_date=bt_cfg.get('start_date', '2025-01-01'),
+        end_date=bt_cfg.get('end_date', '2026-07-27'),
+    )
+
     results = optimize_strategy(
         data['history'], scored_df, tr_cfg,
         start_date=bt_cfg.get('start_date', '2025-01-01'),
         end_date=bt_cfg.get('end_date', '2026-07-27'),
+        precomputed=precomputed,
     )
 
     # 用最优参数运行一次完整回测
@@ -200,10 +227,37 @@ def main():
         # 阶段3: 波段交易回测
         # ================================================================
         from trading_engine import run_swing_backtest, print_trade_summary, generate_equity_chart
+        from indicator_cache import precompute_all_indicators
 
         print("\n" + "━" * 52)
         print("  📈 阶段 3/4: 波段交易回测")
         print("━" * 52)
+
+        # 预计算指标 (首次计算后缓存, 后续秒加载)
+        from data_fetcher import _code_pure
+        pure_to_sina = {}
+        for sina_code in data['history']:
+            pure = _code_pure(sina_code)
+            pure_to_sina[pure] = sina_code
+
+        # 获取交易日列表
+        start_dt = pd.Timestamp(bt_cfg.get('start_date', '2025-01-01'))
+        end_dt = pd.Timestamp(bt_cfg.get('end_date', '2026-07-27'))
+        all_dates = set()
+        for hist in data['history'].values():
+            if hist is not None and 'date' in hist.columns:
+                for d in hist['date'].values:
+                    ts = pd.Timestamp(d)
+                    if start_dt <= ts <= end_dt:
+                        all_dates.add(ts)
+        trading_dates = sorted(all_dates)
+
+        precomputed = precompute_all_indicators(
+            data['history'], pure_to_sina, trading_dates,
+            cache_dir='cache',
+            start_date=bt_cfg.get('start_date', '2025-01-01'),
+            end_date=bt_cfg.get('end_date', '2026-07-27'),
+        )
 
         result = run_swing_backtest(
             history_dict=data['history'],
@@ -211,6 +265,7 @@ def main():
             config=tr_cfg,
             start_date_str=bt_cfg.get('start_date', '2026-01-01'),
             end_date_str=bt_cfg.get('end_date', '2026-07-27'),
+            precomputed=precomputed,
         )
 
         if result:
