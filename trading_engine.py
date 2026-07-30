@@ -37,10 +37,13 @@ def compute_indicators(closes, volumes=None, highs=None, lows=None):
     """计算全部技术指标, 返回字典"""
     n = len(closes)
     ind = {}
+    ind['skdj_close'] = closes[-1] if n > 0 else 0  # 当前价格
 
     # MA均线
     for p in [5, 10, 20, 60, 120]:
         ind[f'ma{p}'] = np.mean(closes[-p:]) if n >= p else np.nan
+    # MA5前一日 (用于判断MA5拐头)
+    ind['ma5_prev'] = np.mean(closes[-6:-1]) if n >= 6 else np.nan
 
     # MACD
     ema12 = _ema(closes, 12)
@@ -201,6 +204,112 @@ def check_buy_signal(ind):
     return is_buy, score, '+'.join(reasons)
 
 
+def check_buy_signal_reversal(ind):
+    """
+    超跌反转策略 (中国石油模式)
+    买入条件:
+    1. 长期阴跌: 60日内跌幅>15% 或 价格在MA120下方
+    2. SKDJ底部金叉: K<30 且 金叉
+    3. MA5拐头向上: 今日MA5 > 昨日MA5
+    4. 成交量配合: 不缩量或温和放量
+    """
+    score = 0
+    reasons = []
+
+    price = ind.get('skdj_close', ind.get('close', 0))
+    k = ind.get('skdj_k', 50)
+    cross = ind.get('skdj_cross', 0)
+    ma5 = ind.get('ma5', 0)
+    ma5_prev = ind.get('ma5_prev', 0)
+    ma120 = ind.get('ma120', 0)
+    ret_60d = ind.get('ret_60d', 0)
+    vol_ratio = ind.get('vol_ratio', 1.0)
+
+    # 条件1: 长期阴跌
+    is_declining = False
+    if not np.isnan(ret_60d) and ret_60d < -0.15:
+        score += 3
+        reasons.append(f'60日跌{ret_60d:.0%}')
+        is_declining = True
+    elif not np.isnan(ma120) and ma120 > 0 and price < ma120 * 0.9:
+        score += 2
+        reasons.append('价格<MA120')
+        is_declining = True
+
+    if not is_declining:
+        return False, 0, ''
+
+    # 条件2: SKDJ底部金叉 (必须)
+    if cross != 1 or k > 35:
+        return False, 0, ''
+
+    if k < 20:
+        score += 4
+        reasons.append(f'SKDJ深度金叉(K={k:.0f})')
+    elif k < 30:
+        score += 3
+        reasons.append(f'SKDJ底部金叉(K={k:.0f})')
+    else:
+        score += 2
+        reasons.append(f'SKDJ低位金叉(K={k:.0f})')
+
+    # 条件3: MA5拐头向上
+    if not np.isnan(ma5) and not np.isnan(ma5_prev) and ma5_prev > 0:
+        if ma5 > ma5_prev:
+            score += 2
+            reasons.append('MA5↑')
+        else:
+            return False, 0, ''  # MA5还没拐头,不买
+
+    # 条件4: 成交量
+    if vol_ratio > 0.8:
+        score += 1
+        if vol_ratio > 1.2:
+            reasons.append(f'放量({vol_ratio:.1f}x)')
+        else:
+            reasons.append(f'量能正常({vol_ratio:.1f}x)')
+
+    is_buy = score >= 6
+    return is_buy, score, '+'.join(reasons)
+
+
+def check_sell_signal_reversal(ind, entry_price, holding_days, max_profit_seen=0):
+    """
+    超跌反转策略卖出信号
+    1. SKDJ高位死叉 (K>65) + 价格偏离MA5较大
+    2. 止盈 >= 15% (让利润奔跑)
+    3. 止损 >= -5% (给更多空间)
+    4. 持有超过30天且无盈利
+    """
+    price = ind.get('close', 0)
+    pnl = (price / entry_price - 1) if entry_price > 0 else 0
+    k = ind['skdj_k']
+    cross = ind['skdj_cross']
+    ma5 = ind.get('ma5', 0)
+
+    # 条件1: SKDJ高位死叉 + 偏离MA5
+    if cross == -1 and k > 60:
+        if not np.isnan(ma5) and ma5 > 0:
+            deviation = (price - ma5) / ma5
+            if deviation > 0.03:  # 价格偏离MA5超过3%
+                return True, f'SKDJ死叉(K={k:.0f})+偏离MA5({deviation:.1%})'
+        return True, f'SKDJ高位死叉(K={k:.0f})'
+
+    # 条件2: 大止盈 (让利润奔跑)
+    if pnl >= 0.15:
+        return True, f'止盈({pnl:.1%})'
+
+    # 条件3: 宽止损
+    if pnl <= -0.05:
+        return True, f'止损({pnl:.1%})'
+
+    # 条件4: 长时间无盈利
+    if holding_days >= 30 and pnl < 0.02:
+        return True, f'持有{holding_days}天({pnl:+.1%})'
+
+    return False, ''
+
+
 def check_sell_signal(ind, entry_price, holding_days, max_profit_seen=0):
     """
     SKDJ卖出信号
@@ -296,6 +405,17 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     take_profit = config.get('take_profit', 0.20)
     max_holding_days = config.get('max_holding_days', 40)
     min_buy_score = config.get('min_buy_score', 5)
+    strategy = config.get('strategy', 'momentum')  # momentum or reversal
+
+    # 选择策略函数
+    if strategy == 'reversal':
+        buy_signal_func = check_buy_signal_reversal
+        sell_signal_func = check_sell_signal_reversal
+        print(f"  策略: 超跌反转 (中国石油模式)")
+    else:
+        buy_signal_func = check_buy_signal
+        sell_signal_func = check_sell_signal
+        print(f"  策略: 动量趋势")
 
     start_date = pd.Timestamp(start_date_str)
     end_date = pd.Timestamp(end_date_str)
@@ -311,30 +431,33 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 break
         pure_to_sina[code.zfill(6)] = sina_code
 
-    # 获取候选股票列表 — 综合排名TOP30 + 动量排名TOP30 (捕捉技术面龙头)
+    # 获取候选股票列表
     candidate_codes = []
     candidate_set = set()
-    if scored_df is not None and 'code' in scored_df.columns:
-        # 综合排名TOP30 (基本面龙头)
-        for _, row in scored_df.head(30).iterrows():
-            code = str(row['code']).zfill(6)
-            if code in pure_to_sina and code not in candidate_set:
-                candidate_codes.append(code)
-                candidate_set.add(code)
 
-        # 动量排名TOP30 (技术面龙头 — 近期涨得最猛的)
-        if 'momentum_score' in scored_df.columns:
-            momentum_ranked = scored_df.sort_values('momentum_score', ascending=False)
-            for _, row in momentum_ranked.head(30).iterrows():
+    if strategy == 'reversal':
+        # 反转策略: 扫描全部股票 (超跌机会 anywhere)
+        candidate_codes = list(pure_to_sina.keys())
+        candidate_set = set(candidate_codes)
+        print(f"  候选: 全部 {len(candidate_codes)} 只 (反转策略扫描全市场)")
+    else:
+        # 动量策略: 综合排名TOP30 + 动量排名TOP30
+        if scored_df is not None and 'code' in scored_df.columns:
+            for _, row in scored_df.head(30).iterrows():
                 code = str(row['code']).zfill(6)
                 if code in pure_to_sina and code not in candidate_set:
                     candidate_codes.append(code)
                     candidate_set.add(code)
-
-    if not candidate_codes:
-        candidate_codes = list(pure_to_sina.keys())[:60]
-
-    print(f"  龙头候选: {len(candidate_codes)} 只 (综合TOP30 + 动量TOP30)")
+            if 'momentum_score' in scored_df.columns:
+                momentum_ranked = scored_df.sort_values('momentum_score', ascending=False)
+                for _, row in momentum_ranked.head(30).iterrows():
+                    code = str(row['code']).zfill(6)
+                    if code in pure_to_sina and code not in candidate_set:
+                        candidate_codes.append(code)
+                        candidate_set.add(code)
+        if not candidate_codes:
+            candidate_codes = list(pure_to_sina.keys())[:60]
+        print(f"  龙头候选: {len(candidate_codes)} 只 (综合TOP30 + 动量TOP30)")
 
     # 找共同交易日
     all_dates = set()
@@ -411,8 +534,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 to_sell.append((pos, ind['close'], f'持有{holding_days}天到期'))
                 continue
 
-            is_sell, reason = check_sell_signal(ind, pos.entry_price, holding_days,
-                                                 max_profit_tracker.get(pos.code, 0))
+            is_sell, reason = sell_signal_func(ind, pos.entry_price, holding_days,
+                                               max_profit_tracker.get(pos.code, 0))
             if is_sell:
                 to_sell.append((pos, ind['close'], reason))
 
@@ -471,7 +594,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     continue
 
                 ind = compute_indicators(closes, volumes_arr, highs_arr, lows_arr)
-                is_buy, score, reason = check_buy_signal(ind)
+                is_buy, score, reason = buy_signal_func(ind)
 
                 # 龙头加分: 综合排名TOP10额外+2分
                 if scored_df is not None and 'code' in scored_df.columns:
@@ -919,5 +1042,104 @@ def generate_equity_chart(result):
         tickformat='%m-%d',
         row=2, col=1,
     )
+
+    return fig.to_html(full_html=False, include_plotlyjs=False)
+
+
+def backtest_single_stock(code, history_dict, config, start_date_str='2025-01-01',
+                          end_date_str='2026-07-27'):
+    """
+    回测单只股票 (个股专项分析)
+
+    用法: python main.py --stock 601857  (回测中国石油)
+    """
+    from data_fetcher import _code_pure
+
+    # 查找sina代码
+    sina_code = None
+    code = str(code).zfill(6)
+    for s in history_dict:
+        if _code_pure(s) == code:
+            sina_code = s
+            break
+
+    if not sina_code:
+        print(f"  ✗ 未找到股票 {code} 的历史数据")
+        return None
+
+    hist = history_dict[sina_code]
+    if hist is None or 'date' not in hist.columns:
+        print(f"  ✗ 股票 {code} 无有效K线数据")
+        return None
+
+    # 构建单只股票的precomputed
+    from indicator_cache import _incremental_indicators
+    import pandas as pd
+
+    start_date = pd.Timestamp(start_date_str)
+    end_date = pd.Timestamp(end_date_str)
+
+    dates_arr = hist['date'].values
+    all_dates = set()
+    for d in dates_arr:
+        ts = pd.Timestamp(d)
+        if start_date <= ts <= end_date:
+            all_dates.add(ts.strftime('%Y-%m-%d'))
+
+    closes = hist['close'].values.astype(float)
+    volumes = hist['volume'].values.astype(float) if 'volume' in hist.columns else None
+    highs = hist['high'].values.astype(float) if 'high' in hist.columns else None
+    lows = hist['low'].values.astype(float) if 'low' in hist.columns else None
+    if highs is None: highs = closes.copy()
+    if lows is None: lows = closes.copy()
+
+    precomputed_data = _incremental_indicators(closes, volumes, highs, lows, dates_arr, all_dates)
+
+    # 用run_swing_backtest但只传入这一只股票
+    pure_to_sina = {code: sina_code}
+    single_history = {sina_code: hist}
+
+    # 构建单只股票的scored_df
+    import pandas as pd
+    scored_df = pd.DataFrame([{
+        'code': code,
+        'name': code,
+        'rank': 1,
+        'momentum_score': 0,
+        'composite_score': 1.0,
+    }])
+
+    # 获取股票名称
+    try:
+        from data_fetcher import fetch_spot_data
+        spot = fetch_spot_data('cache', True)
+        if spot is not None:
+            from data_fetcher import _find_column
+            code_col = _find_column(spot, ['代码'])
+            name_col = _find_column(spot, ['名称'])
+            if code_col and name_col:
+                for _, row in spot.iterrows():
+                    if _code_pure(str(row[code_col])) == code:
+                        scored_df.loc[0, 'name'] = str(row[name_col])
+                        break
+    except Exception:
+        pass
+
+    name = scored_df.loc[0, 'name']
+    print(f"\n  📊 个股回测: {code} {name}")
+    print(f"  区间: {start_date_str} ~ {end_date_str}")
+
+    # 个股回测: 100%仓位
+    config_single = dict(config)
+    config_single['position_pct'] = 1.0
+    config_single['max_positions'] = 1
+
+    result = run_swing_backtest(
+        single_history, scored_df, config_single,
+        start_date_str, end_date_str,
+        precomputed={code: precomputed_data},
+    )
+
+    return result
 
     return fig.to_html(full_html=False, include_plotlyjs=False)

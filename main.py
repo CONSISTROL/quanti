@@ -142,12 +142,87 @@ def run_optimization(config):
             print(f'    "min_buy_score": {best["params"]["min_buy_score"]}')
 
 
+def run_single_stock(stock_code, config):
+    """运行个股回测"""
+    dt_cfg = config.get('data', {})
+    tr_cfg = config.get('trading', {})
+    bt_cfg = config.get('backtest', {})
+
+    print("╔══════════════════════════════════════════════════╗")
+    print("║        A股波段交易系统 — 个股回测模式            ║")
+    print("╚══════════════════════════════════════════════════╝")
+    print(f"  股票: {stock_code}")
+    print(f"  策略: {tr_cfg.get('strategy', 'momentum')}")
+    print(f"  区间: {bt_cfg.get('start_date', '2025-01-01')} ~ {bt_cfg.get('end_date', '2026-07-27')}")
+    print()
+
+    # 数据采集
+    from data_fetcher import fetch_all_data
+    class Args: pass
+    args = Args()
+    args.cache_dir = 'cache'; args.no_cache = False; args.no_history = False
+    args.hist_days = dt_cfg.get('hist_days', 1200); args.workers = dt_cfg.get('workers', 8)
+    args.sleep = dt_cfg.get('sleep', 0.15); args.include_etf_lof = dt_cfg.get('include_etf_lof', False)
+    args.exclude_gem = False; args.exclude_star = False  # 个股回测不过滤
+
+    print("━" * 52)
+    print("  📥 数据采集")
+    print("━" * 52)
+    data = fetch_all_data(args)
+
+    # 运行个股回测
+    from trading_engine import backtest_single_stock, print_trade_summary
+
+    print("\n" + "━" * 52)
+    print("  📈 个股回测")
+    print("━" * 52)
+
+    result = backtest_single_stock(
+        stock_code, data['history'], tr_cfg,
+        bt_cfg.get('start_date', '2025-01-01'),
+        bt_cfg.get('end_date', '2026-07-27'),
+    )
+
+    if result:
+        print_trade_summary(result)
+
+        # 生成HTML报告
+        from report_generator import generate_html_report
+        output_path = f"report_{stock_code}_{datetime.now().strftime('%Y%m%d')}.html"
+        try:
+            actual_path = generate_html_report(
+                None, 30, {}, output_path,
+                trade_result=result,
+            )
+            print(f"\n  ✅ HTML报告: {os.path.abspath(actual_path)}")
+        except Exception as e:
+            print(f"\n  ⚠ HTML报告生成失败: {e}")
+
+    print("\n╔══════════════════════════════════════════════════╗")
+    print("║  ✅ 个股回测完成！                               ║")
+    print("╚══════════════════════════════════════════════════╝")
+
+
 def main():
     config = load_config()
 
     # 检查是否运行参数优化
     if '--optimize' in sys.argv:
         run_optimization(config)
+        return
+
+    # 检查是否运行个股回测
+    stock_code = None
+    for i, arg in enumerate(sys.argv):
+        if arg == '--stock' and i + 1 < len(sys.argv):
+            stock_code = sys.argv[i + 1]
+            break
+        elif arg.startswith('--stock='):
+            stock_code = arg.split('=')[1]
+            break
+
+    if stock_code:
+        run_single_stock(stock_code, config)
         return
 
     # 读取配置

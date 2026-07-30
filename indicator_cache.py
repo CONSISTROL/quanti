@@ -66,10 +66,13 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             elif prev_k >= prev_d and curr_k < curr_d:
                 cross_vals[i] = -1  # 死叉
 
-    # MA60, MA120 (用cumsum加速)
+    # MA5, MA60, MA120 (用cumsum加速)
     cumsum = np.cumsum(closes)
+    ma5_vals = np.full(n, np.nan)
     ma60_vals = np.full(n, np.nan)
     ma120_vals = np.full(n, np.nan)
+    for i in range(4, n):
+        ma5_vals[i] = (cumsum[i] - (cumsum[i-5] if i >= 5 else 0)) / 5
     for i in range(59, n):
         ma60_vals[i] = (cumsum[i] - (cumsum[i-60] if i >= 60 else 0)) / 60
     for i in range(119, n):
@@ -89,11 +92,15 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             if vol20[i] and vol20[i] > 0:
                 vol_ratio_vals[i] = vol5[i] / vol20[i]
 
-    # ret_5d
+    # ret_5d, ret_60d
     ret5d_vals = np.zeros(n)
+    ret60d_vals = np.zeros(n)
     for i in range(5, n):
         if closes[i-5] > 0:
             ret5d_vals[i] = closes[i] / closes[i-5] - 1
+    for i in range(60, n):
+        if closes[i-60] > 0:
+            ret60d_vals[i] = closes[i] / closes[i-60] - 1
 
     # 构建日期→索引映射
     date_to_idx = {}
@@ -117,10 +124,14 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             'j': float(j_vals[idx]),
             'cross': int(cross),
             'vol_ratio': float(vol_ratio_vals[idx]),
+            'ma5': float(ma5_vals[idx]) if not np.isnan(ma5_vals[idx]) else 0,
+            'ma5_prev': float(ma5_vals[idx-1]) if idx > 0 and not np.isnan(ma5_vals[idx-1]) else 0,
             'ma60': float(ma60_vals[idx]) if not np.isnan(ma60_vals[idx]) else 0,
             'ma120': float(ma120_vals[idx]) if not np.isnan(ma120_vals[idx]) else 0,
             'close': float(closes[idx]),
+            'skdj_close': float(closes[idx]),
             'ret_5d': float(ret5d_vals[idx]),
+            'ret_60d': float(ret60d_vals[idx]),
         }
 
     return result
