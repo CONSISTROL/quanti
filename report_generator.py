@@ -144,8 +144,16 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                          backtest_result=None, backtest_date=None, fwd_summary=None,
                          stock_details=None, trade_result=None):
     """生成交互式HTML报告（含plotly图表）"""
-    top = scored_df.head(top_n)
+    # 处理scored_df为None的情况 (个股回测模式)
+    if scored_df is None:
+        import pandas as pd
+        scored_df = pd.DataFrame()
+
+    top = scored_df.head(top_n) if len(scored_df) > 0 else pd.DataFrame()
     total = len(scored_df)
+
+    # 如果是空DataFrame (个股回测模式), 跳过选股相关统计
+    is_single_stock_mode = len(scored_df) == 0
 
     # 根据是否有模拟日期调整输出文件名
     if backtest_date and output_path:
@@ -176,17 +184,18 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
         except Exception:
             pass
 
-    avg_score = scored_df['composite_score'].mean()
-    market_stats['平均得分'] = f"{avg_score:.2f}"
-    market_stats['最高得分'] = f"{scored_df['composite_score'].max():.2f}"
+    if not is_single_stock_mode:
+        avg_score = scored_df['composite_score'].mean()
+        market_stats['平均得分'] = f"{avg_score:.2f}"
+        market_stats['最高得分'] = f"{scored_df['composite_score'].max():.2f}"
 
-    # 资产类型统计
-    has_asset_type = 'asset_type' in scored_df.columns
-    if has_asset_type:
-        n_stock = (scored_df['asset_type'] == 'stock').sum()
-        n_etf = (scored_df['asset_type'] == 'etf').sum()
-        n_lof = (scored_df['asset_type'] == 'lof').sum()
-        market_stats['股票/ETF/LOF'] = f'{n_stock}/{n_etf}/{n_lof}'
+        # 资产类型统计
+        has_asset_type = 'asset_type' in scored_df.columns
+        if has_asset_type:
+            n_stock = (scored_df['asset_type'] == 'stock').sum()
+            n_etf = (scored_df['asset_type'] == 'etf').sum()
+            n_lof = (scored_df['asset_type'] == 'lof').sum()
+            market_stats['股票/ETF/LOF'] = f'{n_stock}/{n_etf}/{n_lof}'
 
     # ---- 构建HTML ----
     html_parts = []
@@ -220,7 +229,8 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     # === 统计卡片 ===
     html_parts.append('<div class="cards">')
     _add_card(html_parts, '扫描证券', f'{total:,}', '只')
-    _add_card(html_parts, '有效打分', f'{scored_df["composite_score"].notna().sum():,}', '只')
+    if not is_single_stock_mode:
+        _add_card(html_parts, '有效打分', f'{scored_df["composite_score"].notna().sum():,}', '只')
     _add_card(html_parts, '展示 TOP', str(top_n), '只')
     for key, val in market_stats.items():
         _add_card(html_parts, key, val, '')
@@ -247,18 +257,20 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     </div>
     """)
 
-    # 3. 综合得分分布
-    dist_html = _plot_score_distribution(scored_df, top)
-    html_parts.append(f"""
+    # 3. 综合得分分布 (仅在全市场扫描模式)
+    if not is_single_stock_mode:
+        dist_html = _plot_score_distribution(scored_df, top)
+        html_parts.append(f"""
     <div class="chart-container">
         <h2>📈 综合得分分布</h2>
         {dist_html}
     </div>
     """)
 
-    # 4. 价值 vs 质量散点图
-    scatter_html = _plot_factor_scatter(scored_df, top, colors)
-    html_parts.append(f"""
+    # 4. 价值 vs 质量散点图 (仅在全市场扫描模式)
+    if not is_single_stock_mode:
+        scatter_html = _plot_factor_scatter(scored_df, top, colors)
+        html_parts.append(f"""
     <div class="chart-container">
         <h2>💎 因子空间 (价值 × 质量)</h2>
         {scatter_html}
@@ -266,7 +278,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     """)
 
     # 5. 资产类型分布 (如果有ETF/LOF)
-    if has_asset_type and scored_df['asset_type'].nunique() > 1:
+    if not is_single_stock_mode and has_asset_type and scored_df['asset_type'].nunique() > 1:
         pie_html = _plot_asset_type_pie(scored_df, top)
         html_parts.append(f"""
     <div class="chart-container">
