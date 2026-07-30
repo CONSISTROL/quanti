@@ -53,6 +53,7 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
     skdj_weekly_k = np.full(n_weekly, 50.0)
     skdj_weekly_d = np.full(n_weekly, 50.0)
     skdj_weekly_j = np.full(n_weekly, 50.0)
+    skdj_weekly_cross = np.zeros(n_weekly, dtype=int)
 
     skdj_period = 9
     for i in range(skdj_period - 1, n_weekly):
@@ -71,6 +72,17 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             skdj_weekly_k[i] = 2/3 * skdj_weekly_k[i-1] + 1/3 * rsv
             skdj_weekly_d[i] = 2/3 * skdj_weekly_d[i-1] + 1/3 * skdj_weekly_k[i]
         skdj_weekly_j[i] = 3 * skdj_weekly_k[i] - 2 * skdj_weekly_d[i]
+
+        # 周线SKDJ金叉/死叉检测
+        if i >= skdj_period:
+            prev_k = skdj_weekly_k[i-1]
+            prev_d = skdj_weekly_d[i-1]
+            curr_k = skdj_weekly_k[i]
+            curr_d = skdj_weekly_d[i]
+            if prev_k <= prev_d and curr_k > curr_d:
+                skdj_weekly_cross[i] = 1  # 金叉
+            elif prev_k >= prev_d and curr_k < curr_d:
+                skdj_weekly_cross[i] = -1  # 死叉
 
     # 预计算日线SKDJ
     k_vals = np.full(n, 50.0)
@@ -222,6 +234,7 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
         skdj_weekly_k_val = float(skdj_weekly_k[weekly_idx]) if weekly_idx < n_weekly else 50.0
         skdj_weekly_d_val = float(skdj_weekly_d[weekly_idx]) if weekly_idx < n_weekly else 50.0
         skdj_weekly_j_val = float(skdj_weekly_j[weekly_idx]) if weekly_idx < n_weekly else 50.0
+        skdj_weekly_cross_val = int(skdj_weekly_cross[weekly_idx]) if weekly_idx < n_weekly else 0
 
         result[d_str] = {
             'skdj_k': float(k_vals[idx]),
@@ -230,6 +243,8 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             'skdj_cross': int(skdj_cross),
             'skdj_weekly_k': skdj_weekly_k_val,
             'skdj_weekly_d': skdj_weekly_d_val,
+            'skdj_weekly_j': skdj_weekly_j_val,
+            'skdj_weekly_cross': skdj_weekly_cross_val,
             'skdj_weekly_j': skdj_weekly_j_val,
             'macd_cross': int(macd_cross),
             'dif': float(dif_vals[idx]) if not np.isnan(dif_vals[idx]) else 0,

@@ -301,25 +301,42 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     html_parts.append('</div>')  # charts-grid
 
     # === 回测图表区 ===
-    if backtest_result is not None and backtest_result.n_rebalances > 0:
+    if backtest_result is not None:
         html_parts.append('<h2 style="margin:24px 0 12px;color:#1a1a2e;">🔬 回测结果</h2>')
 
         # 回测摘要表
         html_parts.append(_build_backtest_summary_table(backtest_result))
 
-        # 回测图表
-        from backtest import generate_backtest_charts
-        bt_charts = generate_backtest_charts(backtest_result)
-        if bt_charts:
-            html_parts.append('<div class="charts-grid">')
-            for title, chart_html in bt_charts:
-                html_parts.append(f"""
+        # 回测图表 (仅在有交易时显示)
+        has_trades = False
+        if isinstance(backtest_result, dict):
+            trades = backtest_result.get('trades', [])
+            has_trades = len([t for t in trades if t.direction == 'SELL']) > 0
+        else:
+            has_trades = backtest_result.n_rebalances > 0
+
+        if has_trades:
+            from backtest import generate_backtest_charts
+            bt_charts = generate_backtest_charts(backtest_result)
+            if bt_charts:
+                html_parts.append('<div class="charts-grid">')
+                for title, chart_html in bt_charts:
+                    html_parts.append(f"""
     <div class="chart-container">
         <h2>{title}</h2>
         {chart_html}
     </div>
     """)
-            html_parts.append('</div>')
+                html_parts.append('</div>')
+        else:
+            html_parts.append("""
+    <div class="chart-container">
+        <p style="text-align:center; color:#666; padding:40px;">
+            ⚠️ 回测期间未触发任何买卖信号<br>
+            可能原因：买入条件过于严格，或市场未满足信号条件
+        </p>
+    </div>
+    """)
 
     # === 指定日期选股: 前瞻收益验证 ===
     if fwd_summary:
@@ -965,33 +982,53 @@ def _plot_valuation_distribution(scored_df, top_df):
 
 def _build_backtest_summary_table(result):
     """回测结果摘要HTML表格"""
-    rows_html = []
-    for hp in sorted(result.periods.keys()):
-        ps = result.periods[hp]
-        bench = result.benchmark_periods.get(hp)
+    # 处理dict结构 (from run_swing_backtest)
+    if isinstance(result, dict):
+        stats = result.get('stats', {})
+        trades = result.get('trades', [])
+        n_trades = len([t for t in trades if t.direction == 'SELL'])
 
-        bench_avg = '-'
-        bench_wr = '-'
-        excess = '-'
-        if bench and bench.total_count > 0:
-            bench_avg = f'{bench.avg_return:+.2%}'
-            bench_wr = f'{bench.win_rate:.1%}'
-            excess_val = ps.avg_return - bench.avg_return
-            excess_css = 'color:#27ae60;' if excess_val > 0 else 'color:#e74c3c;'
-            excess = f'<span style="{excess_css}font-weight:600;">{excess_val:+.2%}</span>'
+        rows_html = [f"""<tr>
+            <td><strong>回测结果</strong></td>
+            <td>{n_trades}</td>
+            <td style="font-weight:600;">{stats.get('win_rate', 0):.1%}</td>
+            <td>{stats.get('avg_return', 0):+.2%}</td>
+            <td>{stats.get('total_return', 0):+.2%}</td>
+            <td>{stats.get('sharpe', 0):.2f}</td>
+            <td style="color:#e74c3c;">{stats.get('max_drawdown', 0):.1%}</td>
+            <td>-</td>
+            <td>-</td>
+            <td>-</td>
+        </tr>"""]
+    else:
+        # 原有的BacktestResult对象处理
+        rows_html = []
+        for hp in sorted(result.periods.keys()):
+            ps = result.periods[hp]
+            bench = result.benchmark_periods.get(hp)
 
-        rows_html.append(f"""<tr>
-            <td><strong>{hp}日</strong></td>
-            <td>{result.n_rebalances}</td>
-            <td style="font-weight:600;">{ps.win_rate:.1%}</td>
-            <td>{ps.avg_return:+.2%}</td>
-            <td>{ps.median_return:+.2%}</td>
-            <td>{ps.sharpe:.2f}</td>
-            <td style="color:#e74c3c;">{ps.max_drawdown:.1%}</td>
-            <td>{bench_wr}</td>
-            <td>{bench_avg}</td>
-            <td>{excess}</td>
-        </tr>""")
+            bench_avg = '-'
+            bench_wr = '-'
+            excess = '-'
+            if bench and bench.total_count > 0:
+                bench_avg = f'{bench.avg_return:+.2%}'
+                bench_wr = f'{bench.win_rate:.1%}'
+                excess_val = ps.avg_return - bench.avg_return
+                excess_css = 'color:#27ae60;' if excess_val > 0 else 'color:#e74c3c;'
+                excess = f'<span style="{excess_css}font-weight:600;">{excess_val:+.2%}</span>'
+
+            rows_html.append(f"""<tr>
+                <td><strong>{hp}日</strong></td>
+                <td>{result.n_rebalances}</td>
+                <td style="font-weight:600;">{ps.win_rate:.1%}</td>
+                <td>{ps.avg_return:+.2%}</td>
+                <td>{ps.median_return:+.2%}</td>
+                <td>{ps.sharpe:.2f}</td>
+                <td style="color:#e74c3c;">{ps.max_drawdown:.1%}</td>
+                <td>{bench_wr}</td>
+                <td>{bench_avg}</td>
+                <td>{excess}</td>
+            </tr>""")
 
     return f"""
     <table style="margin-bottom:20px;">

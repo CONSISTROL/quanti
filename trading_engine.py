@@ -208,12 +208,11 @@ def check_buy_signal_reversal(ind):
     """
     弱转强趋势策略 (重仓持有模式)
 
-    买入条件:
-    1. 周线SKDJ趋势判断: 周线K>20且不在超买区(K<80)
-    2. MACD金叉 或 SKDJ金叉 (至少一个)
+    买入条件 (必须同时满足):
+    1. 周线SKDJ低位金叉 (K<40且K上穿D)
+    2. 日线SKDJ低位金叉 (K<40且K上穿D) 或 MACD阴转阳金叉
     3. 价格接近或站上MA20 (允许2%容差)
     4. 量比>0.8 (温和放量即可)
-    5. MACD阳线或SKDJ金叉 (趋势确认)
     """
     score = 0
     reasons = []
@@ -228,43 +227,40 @@ def check_buy_signal_reversal(ind):
     ma20 = ind.get('ma20', 0)
     vol_ratio = ind.get('vol_ratio', 1.0)
 
-    # 条件0: 周线SKDJ趋势过滤 (判断大趋势)
+    # 条件0: 周线SKDJ低位金叉 (必须)
     weekly_k = ind.get('skdj_weekly_k', 50)
     weekly_d = ind.get('skdj_weekly_d', 50)
-    weekly_j = ind.get('skdj_weekly_j', 50)
+    weekly_cross = ind.get('skdj_weekly_cross', 0)
 
-    # 周线K>20 (不在底部) 且 K<80 (不在顶部)
-    if weekly_k < 20 or weekly_k > 80:
-        return False, 0, f'周线SKDJ趋势不佳(K={weekly_k:.0f})'
+    # 周线K<40且金叉
+    if weekly_k >= 40 or weekly_cross != 1:
+        return False, 0, f'周线SKDJ不满足(K={weekly_k:.0f}, 交叉={weekly_cross})'
 
-    # 周线K在上升 (K>D 或 K刚金叉)
-    if weekly_k > weekly_d:
-        score += 1
-        reasons.append(f'周线趋势↑(K={weekly_k:.0f}>D={weekly_d:.0f})')
+    score += 3
+    reasons.append(f'周线SKDJ低位金叉(K={weekly_k:.0f})')
 
-    # 条件1: MACD金叉 或 SKDJ低位金叉 (至少一个)
-    has_golden_cross = False
+    # 条件1: 日线SKDJ低位金叉 或 MACD阴转阳金叉 (至少一个)
+    has_daily_signal = False
+
+    # 日线SKDJ低位金叉 (K<40)
+    if skdj_cross == 1 and k < 40:
+        score += 3
+        reasons.append(f'日线SKDJ低位金叉(K={k:.0f})')
+        has_daily_signal = True
+
+    # MACD阴转阳金叉 (DIF上穿DEA)
     if macd_cross == 1:
         score += 3
-        reasons.append(f'MACD金叉(DIF={ind.get("dif", 0):.3f})')
-        has_golden_cross = True
+        reasons.append(f'MACD阴转阳金叉(DIF={ind.get("dif", 0):.3f})')
+        has_daily_signal = True
 
-    if skdj_cross == 1:
-        if k < 20:
-            score += 3
-            reasons.append(f'SKDJ底部金叉(K={k:.0f})')
-            has_golden_cross = True
-        elif k < 40:
-            score += 2
-            reasons.append(f'SKDJ低位金叉(K={k:.0f})')
-            has_golden_cross = True
-        elif k < 60 and macd_cross == 1:  # SKDJ中位金叉需要MACD金叉配合
-            score += 1
-            reasons.append(f'SKDJ中位金叉(K={k:.0f})+MACD确认')
-            has_golden_cross = True
-        # K >= 60 的中高位金叉不算有效信号
+    # MACD阴线缩 (MACD柱状线由负转正或负值缩小)
+    if macd_hist > -0.01 and ind.get('dif', 0) > ind.get('dea', 0) - 0.01:
+        score += 1
+        reasons.append('MACD阴线缩')
+        has_daily_signal = True
 
-    if not has_golden_cross:
+    if not has_daily_signal:
         return False, 0, ''
 
     # 条件2: 价格接近或站上MA20 (允许2%容差)
@@ -290,17 +286,12 @@ def check_buy_signal_reversal(ind):
     else:
         return False, 0, ''
 
-    # 条件4: MACD阳线或SKDJ金叉 (趋势确认)
-    if macd_hist > 0 and ind.get('dif', 0) > ind.get('dea', 0):
-        score += 1
-        reasons.append('MACD阳线')
-
     # 额外加分: MA5拐头
     if not np.isnan(ma5) and not np.isnan(ma5_prev) and ma5 > ma5_prev:
         score += 1
         reasons.append('MA5↑')
 
-    is_buy = score >= 5
+    is_buy = score >= 6
     return is_buy, score, '+'.join(reasons)
 
 
@@ -309,44 +300,47 @@ def check_sell_signal_reversal(ind, entry_price, holding_days, max_profit_seen=0
     趋势跟踪卖出信号 (持有到趋势结束)
 
     卖出条件 (任一触发):
-    1. MACD死叉 (趋势反转)
-    2. SKDJ超买死叉 (K>70)
-    3. MA5下降且MACD弱 (动能减弱)
-    4. 价格跌破MA20 (趋势破坏)
-    5. 止损: -8%
+    1. 周线SKDJ高位死叉 (K>60且K下穿D)
+    2. 日线SKDJ高位死叉 (K>60且K下穿D)
+    3. MACD阳线缩 (MACD柱状线正值缩小)
+    4. 股价跌破MA5
+    5. 股价连续3日没创新高
+    6. 止损: -3%
+    7. 止盈: +8%
     """
     price = ind.get('skdj_close', ind.get('close', 0))
     pnl = (price / entry_price - 1) if entry_price > 0 else 0
     k = ind.get('skdj_k', 50)
     skdj_cross = ind.get('skdj_cross', 0)
-    macd_cross = ind.get('macd_cross', 0)
     macd_hist = ind.get('macd_hist', 0)
     ma5 = ind.get('ma5', 0)
-    ma5_prev = ind.get('ma5_prev', 0)
-    ma20 = ind.get('ma20', 0)
 
-    # 条件1: MACD死叉 (最强卖出信号)
-    if macd_cross == -1:
-        return True, f'MACD死叉(DIF={ind.get("dif", 0):.3f})'
+    # 条件1: 周线SKDJ高位死叉 (K>60且死叉)
+    weekly_k = ind.get('skdj_weekly_k', 50)
+    weekly_cross = ind.get('skdj_weekly_cross', 0)
+    if weekly_k > 60 and weekly_cross == -1:
+        return True, f'周线SKDJ高位死叉(K={weekly_k:.0f})'
 
-    # 条件2: SKDJ超买死叉
-    if skdj_cross == -1 and k > 70:
-        return True, f'SKDJ超买死叉(K={k:.0f})'
+    # 条件2: 日线SKDJ高位死叉 (K>60且死叉)
+    if k > 60 and skdj_cross == -1:
+        return True, f'日线SKDJ高位死叉(K={k:.0f})'
 
-    # 条件3: MA5下降且MACD弱
-    if not np.isnan(ma5) and not np.isnan(ma5_prev) and ma5 < ma5_prev:
-        if macd_hist < 0.01:
-            return True, f'MA5下降({ma5:.2f}<{ma5_prev:.2f})+MACD弱'
+    # 条件3: MACD阳线缩 (MACD柱状线正值缩小)
+    if macd_hist > 0 and macd_hist < 0.02:
+        return True, f'MACD阳线缩(hist={macd_hist:.3f})'
 
-    # 条件4: 价格跌破MA20
-    if not np.isnan(ma20) and ma20 > 0 and price < ma20:
-        return True, f'价格<MA20({price:.2f}<{ma20:.2f})'
+    # 条件4: 股价跌破MA5
+    if not np.isnan(ma5) and ma5 > 0 and price < ma5:
+        return True, f'股价跌破MA5({price:.2f}<{ma5:.2f})'
 
-    # 条件5: 硬止损
-    if pnl <= -0.08:
+    # 条件5: 止损
+    if pnl <= -0.03:
         return True, f'止损({pnl:.1%})'
 
-    # 不设止盈, 让利润奔跑 (趋势跟踪的核心)
+    # 条件6: 止盈
+    if pnl >= 0.08:
+        return True, f'止盈({pnl:.1%})'
+
     return False, ''
 
 
