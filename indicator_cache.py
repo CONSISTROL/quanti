@@ -66,13 +66,16 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             elif prev_k >= prev_d and curr_k < curr_d:
                 cross_vals[i] = -1  # 死叉
 
-    # MA5, MA60, MA120 (用cumsum加速)
+    # MA5, MA20, MA60, MA120 (用cumsum加速)
     cumsum = np.cumsum(closes)
     ma5_vals = np.full(n, np.nan)
+    ma20_vals = np.full(n, np.nan)
     ma60_vals = np.full(n, np.nan)
     ma120_vals = np.full(n, np.nan)
     for i in range(4, n):
         ma5_vals[i] = (cumsum[i] - (cumsum[i-5] if i >= 5 else 0)) / 5
+    for i in range(19, n):
+        ma20_vals[i] = (cumsum[i] - (cumsum[i-20] if i >= 20 else 0)) / 20
     for i in range(59, n):
         ma60_vals[i] = (cumsum[i] - (cumsum[i-60] if i >= 60 else 0)) / 60
     for i in range(119, n):
@@ -102,6 +105,52 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
         if closes[i-60] > 0:
             ret60d_vals[i] = closes[i] / closes[i-60] - 1
 
+    # MACD (EMA12, EMA26, DIF, DEA, MACD柱)
+    ema12_vals = np.full(n, np.nan)
+    ema26_vals = np.full(n, np.nan)
+    dif_vals = np.full(n, np.nan)
+    dea_vals = np.full(n, np.nan)
+    macd_hist_vals = np.full(n, np.nan)
+    macd_cross_vals = np.zeros(n, dtype=int)
+
+    # 计算EMA12和EMA26
+    if n >= 26:
+        ema12_vals[11] = np.mean(closes[:12])
+        for i in range(12, n):
+            ema12_vals[i] = _ema_incremental(ema12_vals[i-1], closes[i], 12)
+
+        ema26_vals[25] = np.mean(closes[:26])
+        for i in range(26, n):
+            ema26_vals[i] = _ema_incremental(ema26_vals[i-1], closes[i], 26)
+
+        # DIF = EMA12 - EMA26
+        for i in range(25, n):
+            if not np.isnan(ema12_vals[i]) and not np.isnan(ema26_vals[i]):
+                dif_vals[i] = ema12_vals[i] - ema26_vals[i]
+
+        # DEA = EMA9(DIF)
+        dif_valid = dif_vals[~np.isnan(dif_vals)]
+        if len(dif_valid) >= 9:
+            dea_start = np.where(~np.isnan(dif_vals))[0][0]
+            dea_vals[dea_start + 8] = np.mean(dif_vals[dea_start:dea_start + 9])
+            for i in range(dea_start + 9, n):
+                if not np.isnan(dif_vals[i]) and not np.isnan(dea_vals[i-1]):
+                    dea_vals[i] = _ema_incremental(dea_vals[i-1], dif_vals[i], 9)
+
+            # MACD柱 = (DIF - DEA) * 2
+            for i in range(dea_start + 8, n):
+                if not np.isnan(dif_vals[i]) and not np.isnan(dea_vals[i]):
+                    macd_hist_vals[i] = (dif_vals[i] - dea_vals[i]) * 2
+
+            # MACD金叉/死叉检测
+            for i in range(1, n):
+                if not np.isnan(dif_vals[i]) and not np.isnan(dif_vals[i-1]) and \
+                   not np.isnan(dea_vals[i]) and not np.isnan(dea_vals[i-1]):
+                    if dif_vals[i-1] <= dea_vals[i-1] and dif_vals[i] > dea_vals[i]:
+                        macd_cross_vals[i] = 1  # 金叉
+                    elif dif_vals[i-1] >= dea_vals[i-1] and dif_vals[i] < dea_vals[i]:
+                        macd_cross_vals[i] = -1  # 死叉
+
     # 构建日期→索引映射
     date_to_idx = {}
     for i in range(120, n):
@@ -111,21 +160,33 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
 
     # 提取目标日期的指标
     for d_str, idx in date_to_idx.items():
-        # 近3天是否有交叉 (因为金叉可能在当天或前1-2天)
-        cross = 0
+        # 近3天是否有SKDJ交叉 (因为金叉可能在当天或前1-2天)
+        skdj_cross = 0
         for lag in range(0, min(3, idx)):
             if cross_vals[idx - lag] != 0:
-                cross = cross_vals[idx - lag]
+                skdj_cross = cross_vals[idx - lag]
+                break
+
+        # 近3天是否有MACD交叉
+        macd_cross = 0
+        for lag in range(0, min(3, idx)):
+            if macd_cross_vals[idx - lag] != 0:
+                macd_cross = macd_cross_vals[idx - lag]
                 break
 
         result[d_str] = {
-            'k': float(k_vals[idx]),
-            'd': float(d_vals[idx]),
-            'j': float(j_vals[idx]),
-            'cross': int(cross),
+            'skdj_k': float(k_vals[idx]),
+            'skdj_d': float(d_vals[idx]),
+            'skdj_j': float(j_vals[idx]),
+            'skdj_cross': int(skdj_cross),
+            'macd_cross': int(macd_cross),
+            'dif': float(dif_vals[idx]) if not np.isnan(dif_vals[idx]) else 0,
+            'dea': float(dea_vals[idx]) if not np.isnan(dea_vals[idx]) else 0,
+            'macd_hist': float(macd_hist_vals[idx]) if not np.isnan(macd_hist_vals[idx]) else 0,
             'vol_ratio': float(vol_ratio_vals[idx]),
             'ma5': float(ma5_vals[idx]) if not np.isnan(ma5_vals[idx]) else 0,
             'ma5_prev': float(ma5_vals[idx-1]) if idx > 0 and not np.isnan(ma5_vals[idx-1]) else 0,
+            'ma20': float(ma20_vals[idx]) if not np.isnan(ma20_vals[idx]) else 0,
             'ma60': float(ma60_vals[idx]) if not np.isnan(ma60_vals[idx]) else 0,
             'ma120': float(ma120_vals[idx]) if not np.isnan(ma120_vals[idx]) else 0,
             'close': float(closes[idx]),
