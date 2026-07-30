@@ -227,7 +227,7 @@ def check_buy_signal_reversal(ind):
     ma20 = ind.get('ma20', 0)
     vol_ratio = ind.get('vol_ratio', 1.0)
 
-    # 条件1: MACD金叉 或 SKDJ金叉 (至少一个)
+    # 条件1: MACD金叉 或 SKDJ低位金叉 (至少一个)
     has_golden_cross = False
     if macd_cross == 1:
         score += 3
@@ -235,16 +235,19 @@ def check_buy_signal_reversal(ind):
         has_golden_cross = True
 
     if skdj_cross == 1:
-        if k < 30:
+        if k < 20:
             score += 3
             reasons.append(f'SKDJ底部金叉(K={k:.0f})')
-        elif k < 50:
+            has_golden_cross = True
+        elif k < 40:
             score += 2
             reasons.append(f'SKDJ低位金叉(K={k:.0f})')
-        else:
+            has_golden_cross = True
+        elif k < 60 and macd_cross == 1:  # SKDJ中位金叉需要MACD金叉配合
             score += 1
-            reasons.append(f'SKDJ中位金叉(K={k:.0f})')
-        has_golden_cross = True
+            reasons.append(f'SKDJ中位金叉(K={k:.0f})+MACD确认')
+            has_golden_cross = True
+        # K >= 60 的中高位金叉不算有效信号
 
     if not has_golden_cross:
         return False, 0, ''
