@@ -568,8 +568,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             current_pnl = (ind['close'] / pos.entry_price - 1) if pos.entry_price > 0 else 0
             max_profit_tracker[pos.code] = max(max_profit_tracker.get(pos.code, 0), current_pnl)
 
-            # 最大持有天数强制卖出
-            if holding_days >= max_holding_days:
+            # 最大持有天数强制卖出 (max_holding_days=0表示不限制)
+            if max_holding_days > 0 and holding_days >= max_holding_days:
                 to_sell.append((pos, ind['close'], f'持有{holding_days}天到期'))
                 continue
 

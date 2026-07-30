@@ -472,14 +472,14 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 else:
                     held.pop(t.code, None)
                 # 累计收益 + 总市值 + 仓位
-                d_short = t.date.strftime('%m-%d')
+                d_short = t.date.strftime('%Y-%m-%d')
                 nav = date_nav.get(d_short, init_cap)
                 cum = (nav / init_cap - 1) if init_cap > 0 else 0
                 cum_css = 'color:#27ae60;font-weight:600;' if cum >= 0 else 'color:#e74c3c;font-weight:600;'
                 held_val = sum(s * p for s, p in held.values())
                 pos_ratio = held_val / nav if nav > 0 else 0
                 html_parts.append(f"""<tr>
-                    <td>{t.date.strftime('%m-%d')}</td>
+                    <td>{t.date.strftime('%Y-%m-%d')}</td>
                     <td style="{dir_css}">{dir_label}</td>
                     <td><strong>{t.code}</strong></td>
                     <td>{t.name}</td>
