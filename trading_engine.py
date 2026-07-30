@@ -209,10 +209,11 @@ def check_buy_signal_reversal(ind):
     弱转强趋势策略 (重仓持有模式)
 
     买入条件:
-    1. MACD金叉 或 SKDJ金叉 (至少一个)
-    2. 价格接近或站上MA20 (允许2%容差)
-    3. 量比>0.8 (温和放量即可)
-    4. MACD阳线或SKDJ金叉 (趋势确认)
+    1. 周线SKDJ趋势判断: 周线K>20且不在超买区(K<80)
+    2. MACD金叉 或 SKDJ金叉 (至少一个)
+    3. 价格接近或站上MA20 (允许2%容差)
+    4. 量比>0.8 (温和放量即可)
+    5. MACD阳线或SKDJ金叉 (趋势确认)
     """
     score = 0
     reasons = []
@@ -226,6 +227,20 @@ def check_buy_signal_reversal(ind):
     ma5_prev = ind.get('ma5_prev', 0)
     ma20 = ind.get('ma20', 0)
     vol_ratio = ind.get('vol_ratio', 1.0)
+
+    # 条件0: 周线SKDJ趋势过滤 (判断大趋势)
+    weekly_k = ind.get('skdj_weekly_k', 50)
+    weekly_d = ind.get('skdj_weekly_d', 50)
+    weekly_j = ind.get('skdj_weekly_j', 50)
+
+    # 周线K>20 (不在底部) 且 K<80 (不在顶部)
+    if weekly_k < 20 or weekly_k > 80:
+        return False, 0, f'周线SKDJ趋势不佳(K={weekly_k:.0f})'
+
+    # 周线K在上升 (K>D 或 K刚金叉)
+    if weekly_k > weekly_d:
+        score += 1
+        reasons.append(f'周线趋势↑(K={weekly_k:.0f}>D={weekly_d:.0f})')
 
     # 条件1: MACD金叉 或 SKDJ低位金叉 (至少一个)
     has_golden_cross = False
@@ -506,7 +521,6 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     trades = []     # [TradeRecord, ...]
     equity_curve = []
     max_profit_tracker = {}  # {code: max_profit_seen}
-    cooldown = {}  # {code: sell_date} — 卖出后冷却期
 
     # 凯利公式参数
     kelly_mode = config.get('kelly_mode', False)
@@ -574,7 +588,6 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 pos.shares, amount, reason, pnl_pct
             ))
             positions.remove(pos)
-            cooldown[pos.code] = today  # 卖出后冷却
             max_profit_tracker.pop(pos.code, None)
 
             # 凯利公式: 记录盈亏
@@ -593,12 +606,6 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             for code in candidate_codes:
                 if code in held_codes:
                     continue
-                # 冷却期: 卖出后5个交易日内不买回
-                if code in cooldown:
-                    sell_date = cooldown[code]
-                    days_since_sell = sum(1 for d in trading_dates if sell_date < d <= today)
-                    if days_since_sell < 3:
-                        continue
                 sina = pure_to_sina.get(code)
                 if not sina:
                     continue
@@ -666,10 +673,6 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             for code, sina in pure_to_sina.items():
                 if code in held_codes or code in candidate_set:
                     continue
-                if code in cooldown:
-                    sell_date = cooldown[code]
-                    if sum(1 for d in trading_dates if sell_date < d <= today) < 3:
-                        continue
 
                 # 使用预计算数据 (快)
                 if precomputed and code in precomputed:

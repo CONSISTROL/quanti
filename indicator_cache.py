@@ -21,7 +21,8 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
     """
     增量计算一只股票在所有日期上的指标 (只遍历一次)
 
-    返回: {date_str: {k, d, j, cross, vol_ratio, ma60, ma120, close, ret_5d}}
+    返回: {date_str: {skdj_k, skdj_d, skdj_j, skdj_cross, skdj_weekly_k, skdj_weekly_d, skdj_weekly_j,
+                      macd_cross, dif, dea, macd_hist, vol_ratio, ma5, ma5_prev, ma20, ma60, ma120, close, ret_5d, ret_60d}}
     """
     n = len(closes)
     if n < 120:
@@ -29,7 +30,49 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
 
     result = {}
 
-    # 预计算SKDJ
+    # 预计算周线数据 (每5个交易日为一周)
+    weekly_closes = []
+    weekly_highs = []
+    weekly_lows = []
+    daily_to_weekly_idx = {}  # 日线索引 -> 周线索引
+
+    for i in range(0, n, 5):
+        end_idx = min(i + 5, n)
+        weekly_closes.append(closes[end_idx - 1])
+        weekly_highs.append(np.max(highs[i:end_idx]))
+        weekly_lows.append(np.min(lows[i:end_idx]))
+        for j in range(i, end_idx):
+            daily_to_weekly_idx[j] = len(weekly_closes) - 1
+
+    weekly_closes = np.array(weekly_closes)
+    weekly_highs = np.array(weekly_highs)
+    weekly_lows = np.array(weekly_lows)
+    n_weekly = len(weekly_closes)
+
+    # 预计算周线SKDJ
+    skdj_weekly_k = np.full(n_weekly, 50.0)
+    skdj_weekly_d = np.full(n_weekly, 50.0)
+    skdj_weekly_j = np.full(n_weekly, 50.0)
+
+    skdj_period = 9
+    for i in range(skdj_period - 1, n_weekly):
+        window_high = np.max(weekly_highs[i - skdj_period + 1:i + 1])
+        window_low = np.min(weekly_lows[i - skdj_period + 1:i + 1])
+
+        if window_high == window_low:
+            rsv = 50.0
+        else:
+            rsv = (weekly_closes[i] - window_low) / (window_high - window_low) * 100
+
+        if i == skdj_period - 1:
+            skdj_weekly_k[i] = rsv
+            skdj_weekly_d[i] = skdj_weekly_k[i]
+        else:
+            skdj_weekly_k[i] = 2/3 * skdj_weekly_k[i-1] + 1/3 * rsv
+            skdj_weekly_d[i] = 2/3 * skdj_weekly_d[i-1] + 1/3 * skdj_weekly_k[i]
+        skdj_weekly_j[i] = 3 * skdj_weekly_k[i] - 2 * skdj_weekly_d[i]
+
+    # 预计算日线SKDJ
     k_vals = np.full(n, 50.0)
     d_vals = np.full(n, 50.0)
     j_vals = np.full(n, 50.0)
@@ -174,11 +217,20 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
                 macd_cross = macd_cross_vals[idx - lag]
                 break
 
+        # 获取周线SKDJ (通过日线索引映射到周线索引)
+        weekly_idx = daily_to_weekly_idx.get(idx, 0)
+        skdj_weekly_k_val = float(skdj_weekly_k[weekly_idx]) if weekly_idx < n_weekly else 50.0
+        skdj_weekly_d_val = float(skdj_weekly_d[weekly_idx]) if weekly_idx < n_weekly else 50.0
+        skdj_weekly_j_val = float(skdj_weekly_j[weekly_idx]) if weekly_idx < n_weekly else 50.0
+
         result[d_str] = {
             'skdj_k': float(k_vals[idx]),
             'skdj_d': float(d_vals[idx]),
             'skdj_j': float(j_vals[idx]),
             'skdj_cross': int(skdj_cross),
+            'skdj_weekly_k': skdj_weekly_k_val,
+            'skdj_weekly_d': skdj_weekly_d_val,
+            'skdj_weekly_j': skdj_weekly_j_val,
             'macd_cross': int(macd_cross),
             'dif': float(dif_vals[idx]) if not np.isnan(dif_vals[idx]) else 0,
             'dea': float(dea_vals[idx]) if not np.isnan(dea_vals[idx]) else 0,
