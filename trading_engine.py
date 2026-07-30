@@ -887,19 +887,27 @@ def print_trade_summary(result):
         dir_label = '🟢买入' if t.direction == 'BUY' else '🔴卖出'
         pnl_str = f'{t.pnl_pct:+.1%}' if t.direction == 'SELL' else ''
 
-        # 更新持仓跟踪
+        # 更新持仓跟踪 (使用当前市场价格)
         if t.direction == 'BUY':
-            current_held[t.code] = (t.shares, t.price)
+            current_held[t.code] = (t.shares, t.price)  # 买入时使用交易价格
         else:
             current_held.pop(t.code, None)
 
-        # 当前总市值 = 现金 + 持仓市值
-        held_value = sum(s * p for s, p in current_held.values())
-        # 用equity_curve的净值更准确
+        # 当前持仓市值 (使用当前市场价格)
+        # 对于买入交易，新仓位使用交易价格
+        # 对于卖出交易，剩余仓位使用上一次的市场价格
+        held_value = 0
+        for code, (shares, last_price) in current_held.items():
+            held_value += shares * last_price
+
+        # 总市值 = equity_curve的值 (包含现金+持仓市值)
         d_str = t.date.strftime('%Y-%m-%d')
         total_value = date_nav.get(d_str, initial)
+
+        # 仓位 = 持仓市值 / 总市值
         position_ratio = held_value / total_value if total_value > 0 else 0
 
+        # 累计收益 = (总市值 / 初始资金) - 1
         cum_ret = (total_value / initial - 1) if initial > 0 else 0
         cum_str = f'{cum_ret:+.1%}'
         pos_str = f'{position_ratio:.0%}'
