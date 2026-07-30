@@ -206,107 +206,129 @@ def check_buy_signal(ind):
 
 def check_buy_signal_reversal(ind):
     """
-    超跌反转策略 (中国石油模式)
+    弱转强趋势策略 (重仓持有模式)
+
     买入条件:
-    1. 长期阴跌: 60日内跌幅>15% 或 价格在MA120下方
-    2. SKDJ底部金叉: K<30 且 金叉
-    3. MA5拐头向上: 今日MA5 > 昨日MA5
-    4. 成交量配合: 不缩量或温和放量
+    1. MACD金叉 或 SKDJ金叉 (至少一个)
+    2. 价格接近或站上MA20 (允许2%容差)
+    3. 量比>0.8 (温和放量即可)
+    4. MACD阳线或SKDJ金叉 (趋势确认)
     """
     score = 0
     reasons = []
 
     price = ind.get('skdj_close', ind.get('close', 0))
     k = ind.get('skdj_k', 50)
-    cross = ind.get('skdj_cross', 0)
+    skdj_cross = ind.get('skdj_cross', 0)
+    macd_cross = ind.get('macd_cross', 0)
+    macd_hist = ind.get('macd_hist', 0)
     ma5 = ind.get('ma5', 0)
     ma5_prev = ind.get('ma5_prev', 0)
-    ma120 = ind.get('ma120', 0)
-    ret_60d = ind.get('ret_60d', 0)
+    ma20 = ind.get('ma20', 0)
     vol_ratio = ind.get('vol_ratio', 1.0)
 
-    # 条件1: 长期阴跌
-    is_declining = False
-    if not np.isnan(ret_60d) and ret_60d < -0.15:
+    # 条件1: MACD金叉 或 SKDJ金叉 (至少一个)
+    has_golden_cross = False
+    if macd_cross == 1:
         score += 3
-        reasons.append(f'60日跌{ret_60d:.0%}')
-        is_declining = True
-    elif not np.isnan(ma120) and ma120 > 0 and price < ma120 * 0.9:
-        score += 2
-        reasons.append('价格<MA120')
-        is_declining = True
+        reasons.append(f'MACD金叉(DIF={ind.get("dif", 0):.3f})')
+        has_golden_cross = True
 
-    if not is_declining:
-        return False, 0, ''
-
-    # 条件2: SKDJ底部金叉 (必须)
-    if cross != 1 or k > 35:
-        return False, 0, ''
-
-    if k < 20:
-        score += 4
-        reasons.append(f'SKDJ深度金叉(K={k:.0f})')
-    elif k < 30:
-        score += 3
-        reasons.append(f'SKDJ底部金叉(K={k:.0f})')
-    else:
-        score += 2
-        reasons.append(f'SKDJ低位金叉(K={k:.0f})')
-
-    # 条件3: MA5拐头向上
-    if not np.isnan(ma5) and not np.isnan(ma5_prev) and ma5_prev > 0:
-        if ma5 > ma5_prev:
+    if skdj_cross == 1:
+        if k < 30:
+            score += 3
+            reasons.append(f'SKDJ底部金叉(K={k:.0f})')
+        elif k < 50:
             score += 2
-            reasons.append('MA5↑')
+            reasons.append(f'SKDJ低位金叉(K={k:.0f})')
         else:
-            return False, 0, ''  # MA5还没拐头,不买
+            score += 1
+            reasons.append(f'SKDJ中位金叉(K={k:.0f})')
+        has_golden_cross = True
 
-    # 条件4: 成交量
-    if vol_ratio > 0.8:
+    if not has_golden_cross:
+        return False, 0, ''
+
+    # 条件2: 价格接近或站上MA20 (允许2%容差)
+    if not np.isnan(ma20) and ma20 > 0:
+        if price > ma20:
+            score += 2
+            reasons.append('价格>MA20')
+        elif price > ma20 * 0.98:  # 允许2%容差
+            score += 1
+            reasons.append(f'价格≈MA20({price:.2f}≈{ma20:.2f})')
+        else:
+            return False, 0, ''
+    else:
+        return False, 0, ''
+
+    # 条件3: 量比>0.8 (温和放量即可)
+    if vol_ratio > 1.0:
+        score += 2
+        reasons.append(f'放量({vol_ratio:.1f}x)')
+    elif vol_ratio > 0.8:
         score += 1
-        if vol_ratio > 1.2:
-            reasons.append(f'放量({vol_ratio:.1f}x)')
-        else:
-            reasons.append(f'量能正常({vol_ratio:.1f}x)')
+        reasons.append(f'量能正常({vol_ratio:.1f}x)')
+    else:
+        return False, 0, ''
 
-    is_buy = score >= 6
+    # 条件4: MACD阳线或SKDJ金叉 (趋势确认)
+    if macd_hist > 0 and ind.get('dif', 0) > ind.get('dea', 0):
+        score += 1
+        reasons.append('MACD阳线')
+
+    # 额外加分: MA5拐头
+    if not np.isnan(ma5) and not np.isnan(ma5_prev) and ma5 > ma5_prev:
+        score += 1
+        reasons.append('MA5↑')
+
+    is_buy = score >= 5
     return is_buy, score, '+'.join(reasons)
 
 
 def check_sell_signal_reversal(ind, entry_price, holding_days, max_profit_seen=0):
     """
-    超跌反转策略卖出信号
-    1. SKDJ高位死叉 (K>65) + 价格偏离MA5较大
-    2. 止盈 >= 15% (让利润奔跑)
-    3. 止损 >= -5% (给更多空间)
-    4. 持有超过30天且无盈利
+    趋势跟踪卖出信号 (持有到趋势结束)
+
+    卖出条件 (任一触发):
+    1. MACD死叉 (趋势反转)
+    2. SKDJ超买死叉 (K>70)
+    3. MA5下降且MACD弱 (动能减弱)
+    4. 价格跌破MA20 (趋势破坏)
+    5. 止损: -8%
     """
-    price = ind.get('close', 0)
+    price = ind.get('skdj_close', ind.get('close', 0))
     pnl = (price / entry_price - 1) if entry_price > 0 else 0
-    k = ind['skdj_k']
-    cross = ind['skdj_cross']
+    k = ind.get('skdj_k', 50)
+    skdj_cross = ind.get('skdj_cross', 0)
+    macd_cross = ind.get('macd_cross', 0)
+    macd_hist = ind.get('macd_hist', 0)
     ma5 = ind.get('ma5', 0)
+    ma5_prev = ind.get('ma5_prev', 0)
+    ma20 = ind.get('ma20', 0)
 
-    # 条件1: SKDJ高位死叉 + 偏离MA5
-    if cross == -1 and k > 60:
-        if not np.isnan(ma5) and ma5 > 0:
-            deviation = (price - ma5) / ma5
-            if deviation > 0.03:  # 价格偏离MA5超过3%
-                return True, f'SKDJ死叉(K={k:.0f})+偏离MA5({deviation:.1%})'
-        return True, f'SKDJ高位死叉(K={k:.0f})'
+    # 条件1: MACD死叉 (最强卖出信号)
+    if macd_cross == -1:
+        return True, f'MACD死叉(DIF={ind.get("dif", 0):.3f})'
 
-    # 条件2: 大止盈 (让利润奔跑)
-    if pnl >= 0.15:
-        return True, f'止盈({pnl:.1%})'
+    # 条件2: SKDJ超买死叉
+    if skdj_cross == -1 and k > 70:
+        return True, f'SKDJ超买死叉(K={k:.0f})'
 
-    # 条件3: 宽止损
-    if pnl <= -0.05:
+    # 条件3: MA5下降且MACD弱
+    if not np.isnan(ma5) and not np.isnan(ma5_prev) and ma5 < ma5_prev:
+        if macd_hist < 0.01:
+            return True, f'MA5下降({ma5:.2f}<{ma5_prev:.2f})+MACD弱'
+
+    # 条件4: 价格跌破MA20
+    if not np.isnan(ma20) and ma20 > 0 and price < ma20:
+        return True, f'价格<MA20({price:.2f}<{ma20:.2f})'
+
+    # 条件5: 硬止损
+    if pnl <= -0.08:
         return True, f'止损({pnl:.1%})'
 
-    # 条件4: 长时间无盈利
-    if holding_days >= 30 and pnl < 0.02:
-        return True, f'持有{holding_days}天({pnl:+.1%})'
-
+    # 不设止盈, 让利润奔跑 (趋势跟踪的核心)
     return False, ''
 
 
@@ -411,7 +433,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     if strategy == 'reversal':
         buy_signal_func = check_buy_signal_reversal
         sell_signal_func = check_sell_signal_reversal
-        print(f"  策略: 超跌反转 (中国石油模式)")
+        print(f"  策略: 弱转强趋势 (MACD+SKDJ双金叉, 重仓持有)")
     else:
         buy_signal_func = check_buy_signal
         sell_signal_func = check_sell_signal
