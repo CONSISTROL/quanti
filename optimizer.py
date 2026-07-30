@@ -18,7 +18,7 @@ def _run_single_backtest(args):
     from contextlib import redirect_stdout
     from trading_engine import run_swing_backtest
 
-    # 从文件加载预计算数据 (共享内存)
+    # 从文件加载预计算数据
     precomputed = None
     if precomputed_path:
         try:
@@ -69,8 +69,7 @@ def optimize_strategy(history_dict, scored_df, base_config,
         base_config: 基础配置
         workers: 并行进程数 (默认CPU核心数-1)
     """
-    if workers is None:
-        workers = min(4, max(1, multiprocessing.cpu_count() - 1))  # 限制最多4进程
+    workers = 8  # 8进程, 平衡CPU和内存
 
     # 参数网格
     param_grid = {
@@ -87,14 +86,14 @@ def optimize_strategy(history_dict, scored_df, base_config,
     print(f"  回测区间: {start_date} ~ {end_date}")
     print(f"  {'─' * 70}")
 
-    # 保存预计算数据到临时文件 (worker共享)
+    # 保存预计算数据到文件 (worker共享)
     import tempfile, pickle
     precomputed_path = None
     if precomputed:
-        precomputed_path = os.path.join(tempfile.gettempdir(), 'quant_optimizer_precomputed.pkl')
+        precomputed_path = os.path.join(tempfile.gettempdir(), 'quant_precomputed.pkl')
         with open(precomputed_path, 'wb') as f:
             pickle.dump(precomputed, f)
-        print(f"  📦 预计算数据已保存 ({os.path.getsize(precomputed_path)/1024/1024:.1f}MB)")
+        print(f"  📦 预计算缓存: {os.path.getsize(precomputed_path)/1024/1024:.1f}MB")
 
     # 构造任务列表
     tasks = []
@@ -102,10 +101,11 @@ def optimize_strategy(history_dict, scored_df, base_config,
         params = dict(zip(keys, combo))
         tasks.append((params, base_config, history_dict, scored_df, start_date, end_date, precomputed_path))
 
-    # 并行执行
+    # 多进程执行
     from tqdm import tqdm
     results = []
 
+    print(f"  🚀 多进程: {workers} 进程")
     ctx = multiprocessing.get_context('spawn')
     with ctx.Pool(processes=workers) as pool:
         for result in tqdm(pool.imap_unordered(_run_single_backtest, tasks),
