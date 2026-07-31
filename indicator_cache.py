@@ -30,19 +30,45 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
 
     result = {}
 
-    # 预计算周线数据 (每5个交易日为一周)
+    # 预计算周线数据 (按自然周聚合: 周一到周五为一周)
     weekly_closes = []
     weekly_highs = []
     weekly_lows = []
     daily_to_weekly_idx = {}  # 日线索引 -> 周线索引
 
-    for i in range(0, n, 5):
-        end_idx = min(i + 5, n)
-        weekly_closes.append(closes[end_idx - 1])
-        weekly_highs.append(np.max(highs[i:end_idx]))
-        weekly_lows.append(np.min(lows[i:end_idx]))
-        for j in range(i, end_idx):
-            daily_to_weekly_idx[j] = len(weekly_closes) - 1
+    # 按自然周分组 (周一到周日为一周)
+    current_week = None
+    week_close, week_high, week_low = None, None, None
+
+    for i in range(n):
+        d_ts = pd.Timestamp(dates_arr[i])
+        week_key = (d_ts.isocalendar().year, d_ts.isocalendar().week)
+
+        if week_key != current_week:
+            # 新的一周开始
+            if current_week is not None:
+                weekly_closes.append(week_close)
+                weekly_highs.append(week_high)
+                weekly_lows.append(week_low)
+            current_week = week_key
+            week_close = closes[i]
+            week_high = highs[i]
+            week_low = lows[i]
+
+        week_close = closes[i]  # 周末收盘价
+        week_high = max(week_high, highs[i])
+        week_low = min(week_low, lows[i])
+        daily_to_weekly_idx[i] = len(weekly_closes)  # 当前周索引
+
+    # 添加最后一周
+    if current_week is not None:
+        weekly_closes.append(week_close)
+        weekly_highs.append(week_high)
+        weekly_lows.append(week_low)
+
+    # 修正daily_to_weekly_idx: 每天的索引应该是所属周的索引
+    for i in range(n):
+        daily_to_weekly_idx[i] = min(daily_to_weekly_idx[i], len(weekly_closes) - 1)
 
     weekly_closes = np.array(weekly_closes)
     weekly_highs = np.array(weekly_highs)

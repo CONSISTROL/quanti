@@ -208,11 +208,9 @@ def check_buy_signal_reversal(ind):
     """
     弱转强趋势策略 (重仓持有模式)
 
-    买入条件 (必须同时满足):
-    1. 周线SKDJ低位金叉 (K<40且K上穿D)
-    2. 日线SKDJ低位金叉 (K<40且K上穿D) 或 MACD阴转阳金叉
-    3. 价格接近或站上MA20 (允许2%容差)
-    4. 量比>0.8 (温和放量即可)
+    买入条件:
+    1. 周线SKDJ低位 (K<40, 处于底部区域)
+    2. 日线MACD金叉 (阴转阳) 或 日线SKDJ低位金叉
     """
     score = 0
     reasons = []
@@ -224,74 +222,45 @@ def check_buy_signal_reversal(ind):
     macd_hist = ind.get('macd_hist', 0)
     ma5 = ind.get('ma5', 0)
     ma5_prev = ind.get('ma5_prev', 0)
-    ma20 = ind.get('ma20', 0)
-    vol_ratio = ind.get('vol_ratio', 1.0)
 
-    # 条件0: 周线SKDJ低位金叉 (必须)
+    # 条件0: 周线SKDJ低位 (K<40, 底部区域) 必须
     weekly_k = ind.get('skdj_weekly_k', 50)
     weekly_d = ind.get('skdj_weekly_d', 50)
     weekly_cross = ind.get('skdj_weekly_cross', 0)
 
-    # 周线K<40且金叉
-    if weekly_k >= 40 or weekly_cross != 1:
-        return False, 0, f'周线SKDJ不满足(K={weekly_k:.0f}, 交叉={weekly_cross})'
+    if weekly_k >= 40:
+        return False, 0, f'周线SKDJ不在低位(K={weekly_k:.0f})'
 
-    score += 3
-    reasons.append(f'周线SKDJ低位金叉(K={weekly_k:.0f})')
+    score += 2
+    if weekly_cross == 1:
+        score += 1
+        reasons.append(f'周线低位+金叉(K={weekly_k:.0f})')
+    else:
+        reasons.append(f'周线低位(K={weekly_k:.0f})')
 
-    # 条件1: 日线SKDJ低位金叉 或 MACD阴转阳金叉 (至少一个)
-    has_daily_signal = False
-
-    # 日线SKDJ低位金叉 (K<40)
-    if skdj_cross == 1 and k < 40:
-        score += 3
-        reasons.append(f'日线SKDJ低位金叉(K={k:.0f})')
-        has_daily_signal = True
-
-    # MACD阴转阳金叉 (DIF上穿DEA)
+    # 条件1: 日线MACD金叉 (阴转阳) - 核心买入信号 (必须)
     if macd_cross == 1:
         score += 3
         reasons.append(f'MACD阴转阳金叉(DIF={ind.get("dif", 0):.3f})')
-        has_daily_signal = True
-
-    # MACD阴线缩 (MACD柱状线由负转正或负值缩小)
-    if macd_hist > -0.01 and ind.get('dif', 0) > ind.get('dea', 0) - 0.01:
-        score += 1
-        reasons.append('MACD阴线缩')
-        has_daily_signal = True
-
-    if not has_daily_signal:
-        return False, 0, ''
-
-    # 条件2: 价格接近或站上MA20 (允许2%容差)
-    if not np.isnan(ma20) and ma20 > 0:
-        if price > ma20:
+    else:
+        # MACD阴线缩 (柱状线由负转正或负值大幅缩小) 也可以
+        if macd_hist > 0 and ind.get('dif', 0) > ind.get('dea', 0) - 0.005:
             score += 2
-            reasons.append('价格>MA20')
-        elif price > ma20 * 0.98:  # 允许2%容差
-            score += 1
-            reasons.append(f'价格≈MA20({price:.2f}≈{ma20:.2f})')
+            reasons.append('MACD阴线缩')
         else:
             return False, 0, ''
-    else:
-        return False, 0, ''
 
-    # 条件3: 量比>0.8 (温和放量即可)
-    if vol_ratio > 1.0:
+    # 加分: 日线SKDJ低位金叉 (K<40)
+    if skdj_cross == 1 and k < 40:
         score += 2
-        reasons.append(f'放量({vol_ratio:.1f}x)')
-    elif vol_ratio > 0.8:
-        score += 1
-        reasons.append(f'量能正常({vol_ratio:.1f}x)')
-    else:
-        return False, 0, ''
+        reasons.append(f'日线SKDJ低位金叉(K={k:.0f})')
 
     # 额外加分: MA5拐头
     if not np.isnan(ma5) and not np.isnan(ma5_prev) and ma5 > ma5_prev:
         score += 1
         reasons.append('MA5↑')
 
-    is_buy = score >= 6
+    is_buy = score >= 4
     return is_buy, score, '+'.join(reasons)
 
 
@@ -300,22 +269,16 @@ def check_sell_signal_reversal(ind, entry_price, holding_days, max_profit_seen=0
     趋势跟踪卖出信号 (持有到趋势结束)
 
     卖出条件 (任一触发):
-    1. 周线SKDJ高位死叉 (K>60且K下穿D)
+    1. 周线SKDJ高位死叉 (K>60且K下穿D) — 最强卖出
     2. 日线SKDJ高位死叉 (K>60且K下穿D)
-    3. MACD阳线缩 (MACD柱状线正值缩小)
-    4. 股价跌破MA5
-    5. 股价连续3日没创新高
-    6. 止损: -3%
-    7. 止盈: +8%
+    3. 止损: -5%
     """
     price = ind.get('skdj_close', ind.get('close', 0))
     pnl = (price / entry_price - 1) if entry_price > 0 else 0
     k = ind.get('skdj_k', 50)
     skdj_cross = ind.get('skdj_cross', 0)
-    macd_hist = ind.get('macd_hist', 0)
-    ma5 = ind.get('ma5', 0)
 
-    # 条件1: 周线SKDJ高位死叉 (K>60且死叉)
+    # 条件1: 周线SKDJ高位死叉 (K>60且死叉) — 最强卖出信号
     weekly_k = ind.get('skdj_weekly_k', 50)
     weekly_cross = ind.get('skdj_weekly_cross', 0)
     if weekly_k > 60 and weekly_cross == -1:
@@ -325,21 +288,9 @@ def check_sell_signal_reversal(ind, entry_price, holding_days, max_profit_seen=0
     if k > 60 and skdj_cross == -1:
         return True, f'日线SKDJ高位死叉(K={k:.0f})'
 
-    # 条件3: MACD阳线缩 (MACD柱状线正值缩小)
-    if macd_hist > 0 and macd_hist < 0.02:
-        return True, f'MACD阳线缩(hist={macd_hist:.3f})'
-
-    # 条件4: 股价跌破MA5
-    if not np.isnan(ma5) and ma5 > 0 and price < ma5:
-        return True, f'股价跌破MA5({price:.2f}<{ma5:.2f})'
-
-    # 条件5: 止损
-    if pnl <= -0.03:
+    # 条件3: 止损
+    if pnl <= -0.05:
         return True, f'止损({pnl:.1%})'
-
-    # 条件6: 止盈
-    if pnl >= 0.08:
-        return True, f'止盈({pnl:.1%})'
 
     return False, ''
 
@@ -597,29 +548,42 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             buy_candidates = []
             held_codes = {p.code for p in positions}
 
+            today_str = today.strftime('%Y-%m-%d')
+
             for code in candidate_codes:
                 if code in held_codes:
                     continue
                 sina = pure_to_sina.get(code)
                 if not sina:
                     continue
-                hist = history_dict.get(sina)
-                if hist is None:
-                    continue
 
-                mask = hist['date'] <= today
-                if mask.sum() < 60:
-                    continue
-                idx = mask.sum() - 1
-                closes = hist['close'].values.astype(float)[:idx+1]
-                volumes_arr = hist['volume'].values.astype(float)[:idx+1] if 'volume' in hist.columns else None
-                highs_arr = hist['high'].values.astype(float)[:idx+1] if 'high' in hist.columns else None
-                lows_arr = hist['low'].values.astype(float)[:idx+1] if 'low' in hist.columns else None
+                # 优先使用预计算数据 (包含周线SKDJ)
+                ind = None
+                if precomputed and code in precomputed:
+                    pdata = precomputed[code].get(today_str)
+                    if pdata:
+                        ind = pdata
 
-                if len(closes) < 60:
-                    continue
+                if ind is None:
+                    # 回退到实时计算
+                    hist = history_dict.get(sina)
+                    if hist is None:
+                        continue
 
-                ind = compute_indicators(closes, volumes_arr, highs_arr, lows_arr)
+                    mask = hist['date'] <= today
+                    if mask.sum() < 60:
+                        continue
+                    idx = mask.sum() - 1
+                    closes = hist['close'].values.astype(float)[:idx+1]
+                    volumes_arr = hist['volume'].values.astype(float)[:idx+1] if 'volume' in hist.columns else None
+                    highs_arr = hist['high'].values.astype(float)[:idx+1] if 'high' in hist.columns else None
+                    lows_arr = hist['low'].values.astype(float)[:idx+1] if 'low' in hist.columns else None
+
+                    if len(closes) < 60:
+                        continue
+
+                    ind = compute_indicators(closes, volumes_arr, highs_arr, lows_arr)
+
                 is_buy, score, reason = buy_signal_func(ind)
 
                 # 龙头加分: 综合排名TOP10额外+2分
@@ -631,7 +595,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                             score += 2
                             reason += '+龙头TOP10' if reason else '龙头TOP10'
 
-                if score >= min_buy_score and ind['skdj_cross'] == 1:
+                if score >= min_buy_score:
                     # 获取名称
                     name = ''
                     if scored_df is not None and 'code' in scored_df.columns:
