@@ -337,6 +337,7 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             'max_k_5d': float(max_k_5d_arr[idx]),
             'k_dn_win': bool(k_dn_win_arr[idx]),
             'macd_gold_win': bool(macd_gold_win_arr[idx]),
+            'hist_rise': bool(hist_up_arr[idx]),          # 当日MACD柱较前一日上升 (DIF-DEA回升)
             'hist_rise_win': bool(hist_rise_win_arr[idx]),
             'hist_fall_win': bool(hist_fall_win_arr[idx]),
             'no_new_high3': bool(no_new_high3_arr[idx]),

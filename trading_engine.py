@@ -242,11 +242,11 @@ def check_buy_signal_reversal(ind):
         score += 3
         reasons.append(f'MACD阴转阳金叉(DIF={ind.get("dif", 0):.3f})')
     else:
-        # MACD阴线缩: 柱状线为负(死叉状态)且近3天回升 = 下跌尾声止跌
-        # (柱状线为正或死叉当天不满足, 避免死叉日误买)
-        if macd_hist < 0 and ind.get('hist_rise_win', False):
+        # 右侧确认 (金叉前的趋势反转): MA5止跌转涨 且 DIF-DEA较前一日上涨
+        # (替代左侧的"阴线缩"抄底信号, 符合右侧交易原则)
+        if ma5 > ma5_prev and ind.get('hist_rise', False):
             score += 2
-            reasons.append('MACD阴线缩')
+            reasons.append('MA5拐头+DIF回升')
         else:
             return False, 0, ''
 
