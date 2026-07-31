@@ -242,12 +242,17 @@ def check_buy_signal_reversal(ind):
         score += 3
         reasons.append(f'MACD阴转阳金叉(DIF={ind.get("dif", 0):.3f})')
     else:
-        # MACD阴线缩 (柱状线由负转正或负值大幅缩小) 也可以
-        if macd_hist > 0 and ind.get('dif', 0) > ind.get('dea', 0) - 0.005:
+        # MACD阴线缩: 柱状线为负(死叉状态)且近3天回升 = 下跌尾声止跌
+        # (柱状线为正或死叉当天不满足, 避免死叉日误买)
+        if macd_hist < 0 and ind.get('hist_rise_win', False):
             score += 2
             reasons.append('MACD阴线缩')
         else:
             return False, 0, ''
+
+    # 条件2 (必须): 日线SKDJ近3天无死叉 (周线定趋势, 日线定买卖点)
+    if skdj_cross == -1:
+        return False, 0, f'日线SKDJ死叉(K={k:.0f})'
 
     # 加分: 日线SKDJ低位金叉 (K<40)
     if skdj_cross == 1 and k < 40:
@@ -483,6 +488,9 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         return max(0.05, min(0.30, kelly))
 
     for day_idx, today in enumerate(tqdm(trading_dates, desc="  回测进度", ncols=80, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')):
+        # ---- 0. 当日卖出集合 (卖出当天禁止买回, 避免同日卖买换手) ----
+        sold_today = set()
+
         # ---- 1. 检查持仓, 判断是否卖出 ----
         to_sell = []
         for pos in positions:
@@ -544,6 +552,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             ))
             positions.remove(pos)
             max_profit_tracker.pop(pos.code, None)
+            sold_today.add(pos.code)  # 当日禁买
 
             # 凯利公式: 记录盈亏
             if kelly_mode:
@@ -561,8 +570,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             today_str = today.strftime('%Y-%m-%d')
 
             for code in candidate_codes:
-                if code in held_codes:
-                    continue
+                if code in held_codes or code in sold_today:
+                    continue  # 已持仓或当日已卖出 (当日禁买)
                 sina = pure_to_sina.get(code)
                 if not sina:
                     continue
