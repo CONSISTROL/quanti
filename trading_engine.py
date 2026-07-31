@@ -208,9 +208,10 @@ def check_buy_signal_reversal(ind):
     """
     弱转强趋势策略 (重仓持有模式)
 
-    买入条件:
-    1. 周线SKDJ低位 (K<40, 处于底部区域)
-    2. 日线MACD金叉 (阴转阳) 或 日线SKDJ低位金叉
+    买入条件 (周线判断: 先判断金叉/死叉是否出现, 再判断高低位):
+    1. 周线SKDJ金叉 (K>D, 周线止跌信号) — 必须
+    2. 周线SKDJ低位 (K<40, 底部区域) — 必须
+    3. 日线MACD金叉 (阴转阳) 或 日线SKDJ低位金叉
     """
     score = 0
     reasons = []
@@ -223,20 +224,18 @@ def check_buy_signal_reversal(ind):
     ma5 = ind.get('ma5', 0)
     ma5_prev = ind.get('ma5_prev', 0)
 
-    # 条件0: 周线SKDJ低位 (K<40, 底部区域) 必须
+    # 条件0: 周线判断 — 先看金叉/死叉是否出现, 再看高低位
     weekly_k = ind.get('skdj_weekly_k', 50)
     weekly_d = ind.get('skdj_weekly_d', 50)
     weekly_cross = ind.get('skdj_weekly_cross', 0)
 
+    if weekly_cross != 1:
+        return False, 0, f'周线未出现金叉(K={weekly_k:.0f} D={weekly_d:.0f})'
     if weekly_k >= 40:
-        return False, 0, f'周线SKDJ不在低位(K={weekly_k:.0f})'
+        return False, 0, f'周线金叉但非低位(K={weekly_k:.0f})'
 
-    score += 2
-    if weekly_cross == 1:
-        score += 1
-        reasons.append(f'周线低位+金叉(K={weekly_k:.0f})')
-    else:
-        reasons.append(f'周线低位(K={weekly_k:.0f})')
+    score += 4
+    reasons.append(f'周线低位金叉(K={weekly_k:.0f})')
 
     # 条件1: 日线MACD金叉 (阴转阳) - 核心买入信号 (必须)
     if macd_cross == 1:
@@ -490,23 +489,34 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             sina = pure_to_sina.get(pos.code)
             if not sina:
                 continue
-            hist = history_dict.get(sina)
-            if hist is None:
-                continue
 
-            mask = hist['date'] <= today
-            if mask.sum() == 0:
-                continue
-            idx = mask.sum() - 1
-            closes = hist['close'].values.astype(float)[:idx+1]
-            volumes_arr = hist['volume'].values.astype(float)[:idx+1] if 'volume' in hist.columns else None
-            highs_arr = hist['high'].values.astype(float)[:idx+1] if 'high' in hist.columns else None
-            lows_arr = hist['low'].values.astype(float)[:idx+1] if 'low' in hist.columns else None
+            # 优先使用预计算数据 (包含周线SKDJ和窗口flags)
+            today_str = today.strftime('%Y-%m-%d')
+            ind = None
+            if precomputed and pos.code in precomputed:
+                pdata = precomputed[pos.code].get(today_str)
+                if pdata:
+                    ind = pdata
 
-            if len(closes) < 20:
-                continue
+            if ind is None:
+                hist = history_dict.get(sina)
+                if hist is None:
+                    continue
 
-            ind = compute_indicators(closes, volumes_arr, highs_arr, lows_arr)
+                mask = hist['date'] <= today
+                if mask.sum() == 0:
+                    continue
+                idx = mask.sum() - 1
+                closes = hist['close'].values.astype(float)[:idx+1]
+                volumes_arr = hist['volume'].values.astype(float)[:idx+1] if 'volume' in hist.columns else None
+                highs_arr = hist['high'].values.astype(float)[:idx+1] if 'high' in hist.columns else None
+                lows_arr = hist['low'].values.astype(float)[:idx+1] if 'low' in hist.columns else None
+
+                if len(closes) < 20:
+                    continue
+
+                ind = compute_indicators(closes, volumes_arr, highs_arr, lows_arr)
+
             holding_days = sum(1 for d in trading_dates if pos.entry_date < d <= today)
 
             # 更新最大浮盈
@@ -733,7 +743,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     win_rate = len(win_trades) / len(sell_trades) if sell_trades else 0
 
     avg_win = np.mean([t.pnl_pct for t in win_trades]) if win_trades else 0
-    avg_loss = np.mean([t.pnl_pct for t in sell_trades if t.pnl_pct <= 0]) if sell_trades else 0
+    loss_trades = [t for t in sell_trades if t.pnl_pct <= 0]
+    avg_loss = np.mean([t.pnl_pct for t in loss_trades]) if loss_trades else 0
 
     # Sharpe
     if len(equity_curve) > 1:
@@ -821,8 +832,12 @@ def print_trade_summary(result):
     print(f"  交易次数:   {stats['total_trades']:>12d} 笔")
     print(f"  胜率:       {stats['win_rate']:>12.1%}")
     print(f"  平均盈利:   {stats['avg_win']:>+12.2%}")
-    print(f"  平均亏损:   {stats['avg_loss']:>+12.2%}")
-    print(f"  盈亏比:     {stats['profit_loss_ratio']:>12.2f}")
+    if stats['avg_loss'] == 0:
+        print(f"  平均亏损:   {'           -'}")
+        print(f"  盈亏比:     {'           ∞'}")
+    else:
+        print(f"  平均亏损:   {stats['avg_loss']:>+12.2%}")
+        print(f"  盈亏比:     {stats['profit_loss_ratio']:>12.2f}")
     print(f"  交易天数:   {stats['trading_days']:>12d} 天")
     print("═" * 70)
 
@@ -1123,10 +1138,11 @@ def backtest_single_stock(code, history_dict, config, start_date_str='2025-01-01
     print(f"\n  📊 个股回测: {code} {name}")
     print(f"  区间: {start_date_str} ~ {end_date_str}")
 
-    # 个股回测: 100%仓位
+    # 个股回测: 100%仓位 (关闭凯利, 个股模式满仓)
     config_single = dict(config)
     config_single['position_pct'] = 1.0
     config_single['max_positions'] = 1
+    config_single['kelly_mode'] = False
 
     result = run_swing_backtest(
         single_history, scored_df, config_single,

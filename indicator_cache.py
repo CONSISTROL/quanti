@@ -30,85 +30,79 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
 
     result = {}
 
-    # 预计算周线数据 (按自然周聚合: 周一到周五为一周)
-    weekly_closes = []
-    weekly_highs = []
-    weekly_lows = []
-    daily_to_weekly_idx = {}  # 日线索引 -> 周线索引
+    # 预计算周线SKDJ (冻结视图: 周内显示"上一已完成周"的最终值, 与行情软件一致)
+    # 底层K/D序列按日级增量计算 (当前周用"本周至今"的bar), RSV窗口 = 当前部分周 + 最近9个已完成周
+    skdj_weekly_k = np.full(n, 50.0)
+    skdj_weekly_d = np.full(n, 50.0)
+    skdj_weekly_j = np.full(n, 50.0)
+    skdj_weekly_cross = np.zeros(n, dtype=int)
 
-    # 按自然周分组 (周一到周日为一周)
+    week_deque = []  # 已完成周 (week_key, high, low), 最多保留9周
     current_week = None
-    week_close, week_high, week_low = None, None, None
+    partial_high = 0.0
+    partial_low = 0.0
 
     for i in range(n):
         d_ts = pd.Timestamp(dates_arr[i])
         week_key = (d_ts.isocalendar().year, d_ts.isocalendar().week)
 
         if week_key != current_week:
-            # 新的一周开始
+            # 新的一周开始: 保存上周的完整bar
             if current_week is not None:
-                weekly_closes.append(week_close)
-                weekly_highs.append(week_high)
-                weekly_lows.append(week_low)
+                week_deque.append((current_week, partial_high, partial_low))
+                if len(week_deque) > 9:
+                    week_deque.pop(0)
             current_week = week_key
-            week_close = closes[i]
-            week_high = highs[i]
-            week_low = lows[i]
+            partial_high = highs[i]
+            partial_low = lows[i]
 
-        week_close = closes[i]  # 周末收盘价
-        week_high = max(week_high, highs[i])
-        week_low = min(week_low, lows[i])
-        daily_to_weekly_idx[i] = len(weekly_closes)  # 当前周索引
+        partial_high = max(partial_high, highs[i])
+        partial_low = min(partial_low, lows[i])
 
-    # 添加最后一周
-    if current_week is not None:
-        weekly_closes.append(week_close)
-        weekly_highs.append(week_high)
-        weekly_lows.append(week_low)
-
-    # 修正daily_to_weekly_idx: 每天的索引应该是所属周的索引
-    for i in range(n):
-        daily_to_weekly_idx[i] = min(daily_to_weekly_idx[i], len(weekly_closes) - 1)
-
-    weekly_closes = np.array(weekly_closes)
-    weekly_highs = np.array(weekly_highs)
-    weekly_lows = np.array(weekly_lows)
-    n_weekly = len(weekly_closes)
-
-    # 预计算周线SKDJ
-    skdj_weekly_k = np.full(n_weekly, 50.0)
-    skdj_weekly_d = np.full(n_weekly, 50.0)
-    skdj_weekly_j = np.full(n_weekly, 50.0)
-    skdj_weekly_cross = np.zeros(n_weekly, dtype=int)
-
-    skdj_period = 9
-    for i in range(skdj_period - 1, n_weekly):
-        window_high = np.max(weekly_highs[i - skdj_period + 1:i + 1])
-        window_low = np.min(weekly_lows[i - skdj_period + 1:i + 1])
+        # RSV窗口: 当前部分周 + 已完成周
+        window_high = partial_high
+        window_low = partial_low
+        for _, wh, wl in week_deque:
+            window_high = max(window_high, wh)
+            window_low = min(window_low, wl)
 
         if window_high == window_low:
             rsv = 50.0
         else:
-            rsv = (weekly_closes[i] - window_low) / (window_high - window_low) * 100
+            rsv = (closes[i] - window_low) / (window_high - window_low) * 100
 
-        if i == skdj_period - 1:
+        if i == 0:
             skdj_weekly_k[i] = rsv
-            skdj_weekly_d[i] = skdj_weekly_k[i]
+            skdj_weekly_d[i] = rsv
         else:
             skdj_weekly_k[i] = 2/3 * skdj_weekly_k[i-1] + 1/3 * rsv
             skdj_weekly_d[i] = 2/3 * skdj_weekly_d[i-1] + 1/3 * skdj_weekly_k[i]
         skdj_weekly_j[i] = 3 * skdj_weekly_k[i] - 2 * skdj_weekly_d[i]
 
-        # 周线SKDJ金叉/死叉检测
-        if i >= skdj_period:
-            prev_k = skdj_weekly_k[i-1]
-            prev_d = skdj_weekly_d[i-1]
-            curr_k = skdj_weekly_k[i]
-            curr_d = skdj_weekly_d[i]
-            if prev_k <= prev_d and curr_k > curr_d:
+        # 周线SKDJ金叉/死叉事件检测 (日级)
+        if i > 0:
+            if skdj_weekly_k[i-1] <= skdj_weekly_d[i-1] and skdj_weekly_k[i] > skdj_weekly_d[i]:
                 skdj_weekly_cross[i] = 1  # 金叉
-            elif prev_k >= prev_d and curr_k < curr_d:
+            elif skdj_weekly_k[i-1] >= skdj_weekly_d[i-1] and skdj_weekly_k[i] < skdj_weekly_d[i]:
                 skdj_weekly_cross[i] = -1  # 死叉
+
+    # 冻结映射: 每个交易日显示"上一已完成周"的最终值 (本周信号待上周走完才确认, 无未来数据)
+    week_order = []
+    week_last_idx = {}
+    for i in range(n):
+        d_ts = pd.Timestamp(dates_arr[i])
+        wk = (d_ts.isocalendar().year, d_ts.isocalendar().week)
+        if wk not in week_last_idx:
+            week_order.append(wk)
+        week_last_idx[wk] = i
+    week_pos = {wk: pos for pos, wk in enumerate(week_order)}
+    prev_week_final = np.full(n, -1, dtype=int)
+    for i in range(n):
+        d_ts = pd.Timestamp(dates_arr[i])
+        wk = (d_ts.isocalendar().year, d_ts.isocalendar().week)
+        pos = week_pos[wk]
+        if pos > 0:
+            prev_week_final[i] = week_last_idx[week_order[pos - 1]]
 
     # 预计算日线SKDJ
     k_vals = np.full(n, 50.0)
@@ -232,6 +226,59 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
                     elif dif_vals[i-1] >= dea_vals[i-1] and dif_vals[i] < dea_vals[i]:
                         macd_cross_vals[i] = -1  # 死叉
 
+    # ---- 参考策略窗口flags (预计算, 供交易信号check函数使用) ----
+    # 窗口参数 (网格搜索7/7命中最优): b_kdj_win=5, b_macd_win=3, b_yin_days=3,
+    # s_kdj_win=5, s_yang_days=2, b_week_gold_win=3, 日线K下行窗口=3天
+
+    def _any_win(flags, w):
+        """近w天(含当天)内是否有True (cumsum加速)"""
+        cs = np.zeros(n + 1, dtype=np.int64)
+        cs[1:] = np.cumsum(flags.astype(np.int64))
+        lo = np.maximum(0, np.arange(n) - w + 1)
+        return (cs[1:] - cs[lo]) > 0
+
+    def _all_win(flags, w):
+        """近w天(含当天)是否全部True"""
+        return ~_any_win(~flags, w)
+
+    def _roll_max_arr(vals, w):
+        """近w天最大值"""
+        return pd.Series(vals).rolling(w, min_periods=1).max().values
+
+    k_up_arr = np.zeros(n, dtype=bool)
+    k_dn_arr = np.zeros(n, dtype=bool)
+    hist_up_arr = np.zeros(n, dtype=bool)
+    hist_dn_arr = np.zeros(n, dtype=bool)
+    for i in range(1, n):
+        if not np.isnan(k_vals[i]) and not np.isnan(k_vals[i - 1]):
+            k_up_arr[i] = k_vals[i] > k_vals[i - 1]
+            k_dn_arr[i] = k_vals[i] < k_vals[i - 1]
+        if not np.isnan(macd_hist_vals[i]) and not np.isnan(macd_hist_vals[i - 1]):
+            hist_up_arr[i] = macd_hist_vals[i] > macd_hist_vals[i - 1]
+            hist_dn_arr[i] = macd_hist_vals[i] < macd_hist_vals[i - 1]
+
+    k_up_win_arr = _any_win(k_up_arr, 5)                                        # b_kdj_win=5
+    max_k_5d_arr = _roll_max_arr(k_vals, 5)                                     # s_kdj_win=5
+    k_dn_win_arr = _any_win(k_dn_arr, 3)                                        # 近3天K有下降
+    dif_dea_up = (~np.isnan(dif_vals)) & (dif_vals > dea_vals)
+    macd_gold_win_arr = _any_win(dif_dea_up, 3)                                 # b_macd_win=3
+    hist_rise_win_arr = _any_win(hist_up_arr, 3)                                # b_yin_days=3
+    hist_fall_win_arr = _all_win(hist_dn_arr, 2)                                # s_yang_days=2
+
+    # 60日最高价 + 连续3天未创新高
+    hh60_arr = _roll_max_arr(closes, 60)
+    no_new_high3_arr = np.zeros(n, dtype=bool)
+    for i in range(3, n):
+        no_new_high3_arr[i] = (closes[i] <= hh60_arr[i - 1]
+                               and closes[i - 1] <= hh60_arr[i - 2]
+                               and closes[i - 2] <= hh60_arr[i - 3])
+
+    # 周线低位金叉 (动态周线 WK<60 且 WK>WD), 近3天 (b_week_gold_win=3, b_week_th=60)
+    wk_gold_low_arr = np.zeros(n, dtype=bool)
+    for i in range(n):
+        wk_gold_low_arr[i] = (skdj_weekly_k[i] < 60) and (skdj_weekly_k[i] > skdj_weekly_d[i])
+    wk_gold_low_win_arr = _any_win(wk_gold_low_arr, 3)
+
     # 构建日期→索引映射
     date_to_idx = {}
     for i in range(120, n):
@@ -255,12 +302,24 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
                 macd_cross = macd_cross_vals[idx - lag]
                 break
 
-        # 获取周线SKDJ (通过日线索引映射到周线索引)
-        weekly_idx = daily_to_weekly_idx.get(idx, 0)
-        skdj_weekly_k_val = float(skdj_weekly_k[weekly_idx]) if weekly_idx < n_weekly else 50.0
-        skdj_weekly_d_val = float(skdj_weekly_d[weekly_idx]) if weekly_idx < n_weekly else 50.0
-        skdj_weekly_j_val = float(skdj_weekly_j[weekly_idx]) if weekly_idx < n_weekly else 50.0
-        skdj_weekly_cross_val = int(skdj_weekly_cross[weekly_idx]) if weekly_idx < n_weekly else 0
+        # 周线SKDJ (冻结视图: 显示上一已完成周的最终值)
+        pw = int(prev_week_final[idx])
+        if pw < 0:
+            skdj_weekly_k_val = 50.0
+            skdj_weekly_d_val = 50.0
+            skdj_weekly_j_val = 50.0
+        else:
+            skdj_weekly_k_val = float(skdj_weekly_k[pw])
+            skdj_weekly_d_val = float(skdj_weekly_d[pw])
+            skdj_weekly_j_val = float(skdj_weekly_j[pw])
+        # 金叉/死叉状态: K>D=金叉, K<D=死叉
+        # (周线判断先看金叉/死叉是否出现, 再看高低位)
+        if skdj_weekly_k_val > skdj_weekly_d_val:
+            skdj_weekly_cross_val = 1
+        elif skdj_weekly_k_val < skdj_weekly_d_val:
+            skdj_weekly_cross_val = -1
+        else:
+            skdj_weekly_cross_val = 0
 
         result[d_str] = {
             'skdj_k': float(k_vals[idx]),
@@ -271,7 +330,17 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             'skdj_weekly_d': skdj_weekly_d_val,
             'skdj_weekly_j': skdj_weekly_j_val,
             'skdj_weekly_cross': skdj_weekly_cross_val,
-            'skdj_weekly_j': skdj_weekly_j_val,
+            # 参考策略flags (动态周线视图 + 窗口聚合)
+            'skdj_weekly_k_dyn': float(skdj_weekly_k[idx]),
+            'skdj_weekly_d_dyn': float(skdj_weekly_d[idx]),
+            'k_up_win': bool(k_up_win_arr[idx]),
+            'max_k_5d': float(max_k_5d_arr[idx]),
+            'k_dn_win': bool(k_dn_win_arr[idx]),
+            'macd_gold_win': bool(macd_gold_win_arr[idx]),
+            'hist_rise_win': bool(hist_rise_win_arr[idx]),
+            'hist_fall_win': bool(hist_fall_win_arr[idx]),
+            'no_new_high3': bool(no_new_high3_arr[idx]),
+            'wk_gold_low_win': bool(wk_gold_low_win_arr[idx]),
             'macd_cross': int(macd_cross),
             'dif': float(dif_vals[idx]) if not np.isnan(dif_vals[idx]) else 0,
             'dea': float(dea_vals[idx]) if not np.isnan(dea_vals[idx]) else 0,

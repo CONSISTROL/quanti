@@ -929,8 +929,101 @@ def ai_analyze_strategy(comparison_results, api_key=None, holding_periods=None):
 # 回测图表
 # ============================================================
 
+def _generate_swing_charts(result):
+    """生成波段回测图表 (dict结构 from run_swing_backtest)"""
+    charts = []
+    colors = {
+        'strategy': '#3498db',
+        'benchmark': '#95a5a6',
+    }
+
+    equity_curve = result.get('equity_curve', [])
+    if len(equity_curve) >= 2:
+        dates = [e[0] for e in equity_curve]
+        values = [e[1] for e in equity_curve]
+        initial = result.get('initial_capital', values[0])
+        nav = [v / initial for v in values]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=dates, y=nav, mode='lines',
+            name='策略净值',
+            line=dict(color=colors['strategy'], width=2.5),
+            hovertemplate='日期: %{x|%Y-%m-%d}<br>净值: %{y:.4f}<extra></extra>',
+        ))
+
+        # 买卖标记
+        trades = result.get('trades', [])
+        buy_trades = [t for t in trades if t.direction == 'BUY']
+        sell_trades = [t for t in trades if t.direction == 'SELL']
+        for t in buy_trades:
+            if t.date in dates:
+                idx = dates.index(t.date)
+                fig.add_trace(go.Scatter(
+                    x=[t.date], y=[nav[idx]], mode='markers',
+                    marker=dict(symbol='triangle-up', size=10, color='#10b981',
+                                line=dict(width=1, color='white')),
+                    name='买入' if t is buy_trades[0] else None,
+                    showlegend=(t is buy_trades[0]),
+                    hovertemplate=f'<b>🟢 买入</b><br>{t.code} {t.name}<br>'
+                                  f'价格: ¥{t.price:.2f}<br>信号: {t.reason}<extra></extra>',
+                ))
+        for t in sell_trades:
+            if t.date in dates:
+                idx = dates.index(t.date)
+                fig.add_trace(go.Scatter(
+                    x=[t.date], y=[nav[idx]], mode='markers',
+                    marker=dict(symbol='triangle-down', size=10, color='#ef4444',
+                                line=dict(width=1, color='white')),
+                    name='卖出' if t is sell_trades[0] else None,
+                    showlegend=(t is sell_trades[0]),
+                    hovertemplate=f'<b>🔴 卖出</b><br>{t.code} {t.name}<br>'
+                                  f'价格: ¥{t.price:.2f}<br>盈亏: {t.pnl_pct:+.1%}<extra></extra>',
+                ))
+
+        fig.update_layout(
+            title='策略累计净值 (含买卖点)',
+            xaxis=dict(title='日期', gridcolor='#f0f0f0'),
+            yaxis=dict(title='净值', gridcolor='#f0f0f0'),
+            height=340, margin=dict(t=40, b=30, l=50, r=20),
+            legend=dict(orientation='h', y=1.12, x=0.5, xanchor='center'),
+            font=dict(size=12),
+        )
+        charts.append(('累计净值', fig.to_html(full_html=False, include_plotlyjs=False)))
+
+    # 交易盈亏分布
+    trades = result.get('trades', [])
+    sell_trades = [t for t in trades if t.direction == 'SELL']
+    if sell_trades:
+        pnls = [t.pnl_pct * 100 for t in sell_trades]
+        fig = go.Figure()
+        fig.add_trace(go.Histogram(
+            x=pnls, nbinsx=15,
+            marker=dict(color='rgba(52,152,219,0.5)', line=dict(color='#2980b9', width=1)),
+            name='交易盈亏',
+        ))
+        fig.add_vline(x=0, line_dash='dash', line_color='#e74c3c', line_width=1.5,
+                      annotation_text='盈亏平衡', annotation_position='top right')
+
+        stats = result.get('stats', {})
+        fig.update_layout(
+            title=f"交易盈亏分布 (共{len(sell_trades)}笔, 胜率{stats.get('win_rate', 0):.0%})",
+            xaxis=dict(title='单笔收益率 (%)', gridcolor='#f0f0f0'),
+            yaxis=dict(title='笔数', gridcolor='#f0f0f0'),
+            height=300, margin=dict(t=40, b=30, l=50, r=20),
+            font=dict(size=12),
+        )
+        charts.append(('盈亏分布', fig.to_html(full_html=False, include_plotlyjs=False)))
+
+    return charts
+
+
 def generate_backtest_charts(result):
     """生成回测图表（Plotly HTML片段列表）"""
+    # 处理dict结构 (from run_swing_backtest / backtest_single_stock)
+    if isinstance(result, dict):
+        return _generate_swing_charts(result)
+
     charts = []
     colors = {
         'strategy': '#3498db',

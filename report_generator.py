@@ -447,7 +447,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
         <div class="card"><div class="card-label">胜率</div>
             <div class="card-value">{stats['win_rate']:.0%}</div></div>
         <div class="card"><div class="card-label">盈亏比</div>
-            <div class="card-value">{stats['profit_loss_ratio']:.2f}</div></div>
+            <div class="card-value">{f"{stats['profit_loss_ratio']:.2f}" if stats['avg_loss'] != 0 else '∞'}</div></div>
         <div class="card"><div class="card-label">最终资金</div>
             <div class="card-value" style="{ret_css}">¥{stats['final_value']:,.0f}</div></div>
     </div>""")
@@ -461,11 +461,11 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
 
         # 操作记录表
         if trades:
-            # 日期→净值映射
+            # 日期→净值映射 (键格式与下方查询一致: %Y-%m-%d)
             date_nav = {}
             init_cap = trade_result['initial_capital']
             for d, v in trade_result.get('equity_curve', []):
-                date_nav[pd.Timestamp(d).strftime('%m-%d')] = v
+                date_nav[pd.Timestamp(d).strftime('%Y-%m-%d')] = v
 
             html_parts.append("""
     <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 操作记录</h2>
@@ -986,13 +986,17 @@ def _build_backtest_summary_table(result):
     if isinstance(result, dict):
         stats = result.get('stats', {})
         trades = result.get('trades', [])
-        n_trades = len([t for t in trades if t.direction == 'SELL'])
+        sell_trades = [t for t in trades if t.direction == 'SELL']
+        n_trades = len(sell_trades)
+        avg_return = stats.get('avg_return')
+        if avg_return is None:
+            avg_return = np.mean([t.pnl_pct for t in sell_trades]) if sell_trades else 0.0
 
         rows_html = [f"""<tr>
             <td><strong>回测结果</strong></td>
             <td>{n_trades}</td>
             <td style="font-weight:600;">{stats.get('win_rate', 0):.1%}</td>
-            <td>{stats.get('avg_return', 0):+.2%}</td>
+            <td>{avg_return:+.2%}</td>
             <td>{stats.get('total_return', 0):+.2%}</td>
             <td>{stats.get('sharpe', 0):.2f}</td>
             <td style="color:#e74c3c;">{stats.get('max_drawdown', 0):.1%}</td>

@@ -193,6 +193,7 @@ def run_single_stock(stock_code, config):
             actual_path = generate_html_report(
                 None, 30, {}, output_path,
                 backtest_result=result,
+                trade_result=result,
             )
             print(f"\n  ✅ HTML报告: {os.path.abspath(actual_path)}")
         except Exception as e:
