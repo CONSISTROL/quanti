@@ -223,7 +223,14 @@ def main():
             break
 
     if stock_code:
-        run_single_stock(stock_code, config)
+        # 清洗股票代码: 去sh/sz/bj前缀 + 补零到6位
+        raw = stock_code.strip()
+        for prefix in ('sh', 'sz', 'bj'):
+            if raw.startswith(prefix):
+                raw = raw[len(prefix):]
+                break
+        raw = raw.zfill(6)
+        run_single_stock(raw, config)
         return
 
     # 读取配置
