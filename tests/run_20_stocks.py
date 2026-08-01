@@ -1,10 +1,13 @@
 """
 挑选20支股票, 用指定策略回测 2025-01-01 ~ 2026-08-01
 选股: 多因子综合评分 TOP 20 (排除创业板/科创板, 按config)
-策略: 通过 --strategy 参数选择 (strategies/ 注册表: reversal/momentum/bollinger)
-用法: python run_20_stocks.py [--strategy bollinger]
+策略: config.json test.strategy 或 --strategy 参数
+用法: python run_test.py --module run_20_stocks [--strategy bollinger]
 """
+import os
 import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import contextlib
 import io
 
@@ -13,16 +16,15 @@ import numpy as np
 
 from main import load_config
 
-config = load_config()
-dt_cfg = config.get('data', {})
-bt_cfg = config.get('backtest', {})
-tr_cfg = config.get('trading', {})
-sc_cfg = config.get('scoring', {})
-
 START, END = '2025-01-01', '2026-08-01'
 
 
-def main(strategy='reversal'):
+def main(config=None, strategy=None):
+    config = config or load_config()
+    dt_cfg = config.get('data', {})
+    tr_cfg = config.get('trading', {})
+    sc_cfg = config.get('scoring', {})
+    strategy = strategy or (config or {}).get('test', {}).get('strategy', 'reversal')
     from strategies import strategy_label
     print("╔══════════════════════════════════════════════════╗")
     print(f"║  20支股票回测 ({START} ~ {END})  策略: {strategy_label(strategy)}  ║")

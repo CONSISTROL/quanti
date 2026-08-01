@@ -75,14 +75,40 @@ python main.py --optimize
 
 网格搜索 108 组参数组合（止损/止盈/持有天数/买入评分），输出最优参数供更新 config.json。
 
-### 4️⃣ 多股批量回测（实验工具）
+### 4️⃣ 多股批量回测（测试套件）
 
 ```bash
-python run_20_stocks.py                    # 默认reversal策略
-python run_20_stocks.py --strategy bollinger   # 指定策略
+python run_test.py --module run_20_stocks               # 默认reversal策略
+python run_test.py --module run_20_stocks --strategy bollinger
 ```
 
 用多因子评分选出 TOP 20 股票，逐只独立满仓回测并汇总（选股/回测区间可在脚本顶部修改）。
+
+### 5️⃣ 测试套件（tests/ 目录）
+
+所有测试/验证脚本集中在 `tests/`，通过 `config.json` 的 `test.module` 选择运行哪个测试：
+
+```bash
+python run_test.py                        # 运行 config 指定的测试
+python run_test.py --module backtest_user # 覆盖指定测试
+python run_test.py --list                 # 列出所有测试
+```
+
+```json
+"test": {
+    "module": "verify_signals",   // tests/ 下要运行的模块
+    "stock": "601857",            // 测试股票
+    "strategy": "reversal"        // 测试策略
+}
+```
+
+| 测试模块 | 说明 |
+|----------|------|
+| **verify_signals** | 7个用户信号验证（指定策略在指定股票上的买卖信号命中率）|
+| **backtest_user** | 用户波段策略回测（周KDJ金叉/死叉 + 日线RSI/BOLL，3只股票）|
+| **grid_search_ref** | 参考策略参数网格搜索 |
+| **grid_search_hybrid** | 混合策略参数搜索 |
+| **run_20_stocks** | 20支股票批量回测（按 test.strategy 策略）|
 
 ## 策略架构（strategies/ 注册表）
 
@@ -202,7 +228,14 @@ Sharpe:     2.30
 
 ```
 ├── main.py              # 入口 (python main.py / --stock / --optimize)
-├── config.json          # 配置 (所有参数, 含策略选择)
+├── run_test.py          # 测试运行器 (运行 config test.module 指定的测试)
+├── config.json          # 配置 (所有参数, 含策略/测试选择)
+├── tests/               # 测试套件 (config test.module 选择)
+│   ├── verify_signals.py    # 7信号验证
+│   ├── backtest_user.py     # 用户波段策略回测
+│   ├── grid_search_ref.py   # 参考策略参数搜索
+│   ├── grid_search_hybrid.py# 混合策略参数搜索
+│   └── run_20_stocks.py     # 20支股票批量回测
 ├── strategies/          # 策略注册表 (config trading.strategy 选择)
 │   ├── __init__.py      #   注册表: reversal/momentum/bollinger
 │   ├── base.py          #   策略基类 (buy_signal/sell_signal/rebound_signal)
