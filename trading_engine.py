@@ -224,23 +224,42 @@ def check_buy_signal_reversal(ind):
     ma5 = ind.get('ma5', 0)
     ma5_prev = ind.get('ma5_prev', 0)
 
-    # 条件0: 周线判断 — 先看金叉/死叉是否出现, 再看高低位
-    weekly_k = ind.get('skdj_weekly_k', 50)
-    weekly_d = ind.get('skdj_weekly_d', 50)
-    weekly_cross = ind.get('skdj_weekly_cross', 0)
+    # 条件0: 周线判断 — 触底确认 (四个要素)
+    weekly_k = ind.get('skdj_weekly_k_dyn', 50)          # 动态周线K
+    weekly_d = ind.get('skdj_weekly_d_dyn', 50)          # 动态周线D
+    k_minus_d = weekly_k - weekly_d
+    close = ind.get('skdj_close', ind.get('close', 0))
+    boll_low = ind.get('wk_boll_low', 0)
 
-    if weekly_cross != 1:
-        return False, 0, f'周线未出现金叉(K={weekly_k:.0f} D={weekly_d:.0f})'
-    if weekly_k >= 40:
-        return False, 0, f'周线金叉但非低位(K={weekly_k:.0f})'
+    # 要素2 (必须): 周线SKDJ触底 — K<20 且 0<K-D<5 (K刚上穿D, 股价触底)
+    if not (weekly_k < 20 and 0 < k_minus_d < 5):
+        return False, 0, f'周线SKDJ未触底(K={weekly_k:.0f} K-D={k_minus_d:.1f})'
+
+    # 要素3 (必须): 周线MACD止跌增长 (DIF-DEA较前日上涨)
+    if not ind.get('wk_macd_rise', False):
+        return False, 0, '周线MACD未止跌'
 
     # 周线MACD深死叉 (DIF-DEA<-0.02) 不交易: 周线级别还在深跌, 行情不确定
     wk_diff = ind.get('wk_dif_dea', 0)
     if wk_diff < -0.02:
         return False, 0, f'周线MACD深死叉(DIF-DEA={wk_diff:.3f})不做'
 
+    # 要素1 (必须): 价格贴近/低于周线BOLL下轨 (超卖区) — 未跌透的假触底不做
+    if boll_low <= 0 or close > boll_low * 1.05:
+        return False, 0, f'价格未到周线超卖区(价/下轨={close / boll_low:.2f})' if boll_low > 0 else '周线BOLL无数据'
+
     score += 4
-    reasons.append(f'周线低位金叉(K={weekly_k:.0f})')
+    reasons.append(f'周线SKDJ触底(K={weekly_k:.0f} K-D={k_minus_d:.1f})+MACD止跌+周线超卖')
+
+    # 要素1 加强 (加分): 跌破BOLL下轨 — 深度超卖
+    if close < boll_low:
+        score += 1
+        reasons.append('周线破BOLL下轨')
+
+    # 要素4 (加分): 周线MA5止跌转涨
+    if ind.get('wk_ma5_rise', False):
+        score += 1
+        reasons.append('周线MA5拐头')
 
     # 条件1: 日线MACD金叉 (阴转阳) - 核心买入信号 (必须)
     if macd_cross == 1:

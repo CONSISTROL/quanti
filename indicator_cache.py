@@ -117,6 +117,38 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
         w_dif = w_ema12 - w_ema26
         w_dea = _ema_incremental(w_dea, w_dif, 9)
         wk_dif_dea[i] = w_dif - w_dea
+    wk_macd_rise = np.zeros(n, dtype=bool)
+    for i in range(1, n):
+        if not np.isnan(wk_dif_dea[i]) and not np.isnan(wk_dif_dea[i - 1]):
+            wk_macd_rise[i] = wk_dif_dea[i] > wk_dif_dea[i - 1]
+
+    # 动态周线MA5与BOLL (序列 = 完成周收盘 + 当前周当日收盘)
+    wk_ma5 = np.full(n, np.nan)
+    wk_boll_low = np.full(n, np.nan)
+    week_close_hist = []  # 已完成周的收盘
+    current_week = None
+    prev_close = 0.0
+    for i in range(n):
+        d_ts = pd.Timestamp(dates_arr[i])
+        wk = (d_ts.isocalendar().year, d_ts.isocalendar().week)
+        if wk != current_week:
+            if current_week is not None:
+                week_close_hist.append(prev_close)
+                if len(week_close_hist) > 30:
+                    week_close_hist = week_close_hist[-30:]
+            current_week = wk
+        prev_close = closes[i]
+        series = week_close_hist + [closes[i]]
+        if len(series) >= 5:
+            wk_ma5[i] = np.mean(series[-5:])
+        if len(series) >= 20:
+            m20 = np.mean(series[-20:])
+            s20 = np.std(series[-20:])
+            wk_boll_low[i] = m20 - 2 * s20
+    wk_ma5_rise = np.zeros(n, dtype=bool)
+    for i in range(1, n):
+        if not np.isnan(wk_ma5[i]) and not np.isnan(wk_ma5[i - 1]):
+            wk_ma5_rise[i] = wk_ma5[i] > wk_ma5[i - 1]
 
     # 预计算日线SKDJ
     k_vals = np.full(n, 50.0)
@@ -348,6 +380,10 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             'skdj_weekly_k_dyn': float(skdj_weekly_k[idx]),
             'skdj_weekly_d_dyn': float(skdj_weekly_d[idx]),
             'wk_dif_dea': float(wk_dif_dea[idx]) if not np.isnan(wk_dif_dea[idx]) else 0,
+            'wk_macd_rise': bool(wk_macd_rise[idx]),       # 周线MACD柱较前日增长 (止跌)
+            'wk_ma5': float(wk_ma5[idx]) if not np.isnan(wk_ma5[idx]) else 0,
+            'wk_ma5_rise': bool(wk_ma5_rise[idx]),         # 周线MA5较前日增长 (止跌转涨)
+            'wk_boll_low': float(wk_boll_low[idx]) if not np.isnan(wk_boll_low[idx]) else 0,
             'k_up_win': bool(k_up_win_arr[idx]),
             'max_k_5d': float(max_k_5d_arr[idx]),
             'k_dn_win': bool(k_dn_win_arr[idx]),
