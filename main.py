@@ -152,7 +152,8 @@ def run_single_stock(stock_code, config):
     print("║        A股波段交易系统 — 个股回测模式            ║")
     print("╚══════════════════════════════════════════════════╝")
     print(f"  股票: {stock_code}")
-    print(f"  策略: {tr_cfg.get('strategy', 'momentum')}")
+    from strategies import strategy_label
+    print(f"  策略: {strategy_label(tr_cfg.get('strategy', 'reversal'))}")
     print(f"  区间: {bt_cfg.get('start_date', '2025-01-01')} ~ {bt_cfg.get('end_date', '2026-07-27')}")
     print()
 

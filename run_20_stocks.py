@@ -1,13 +1,15 @@
 """
-挑选20支股票, 沿用当前策略回测 2025-01-01 ~ 2026-08-01
+挑选20支股票, 用指定策略回测 2025-01-01 ~ 2026-08-01
 选股: 多因子综合评分 TOP 20 (排除创业板/科创板, 按config)
-回测: 每只独立满仓 (与 --stock 模式一致)
+策略: 通过 --strategy 参数选择 (strategies/ 注册表: reversal/momentum/bollinger)
+用法: python run_20_stocks.py [--strategy bollinger]
 """
 import sys
 import contextlib
 import io
 
 import pandas as pd
+import numpy as np
 
 from main import load_config
 
@@ -19,9 +21,11 @@ sc_cfg = config.get('scoring', {})
 
 START, END = '2025-01-01', '2026-08-01'
 
-def main():
+
+def main(strategy='reversal'):
+    from strategies import strategy_label
     print("╔══════════════════════════════════════════════════╗")
-    print("║      20支股票回测 (2025-01-01 ~ 2026-08-01)      ║")
+    print(f"║  20支股票回测 ({START} ~ {END})  策略: {strategy_label(strategy)}  ║")
     print("╚══════════════════════════════════════════════════╝")
 
     # ---- 1. 数据采集 (缓存) ----
@@ -45,7 +49,7 @@ def main():
     w_vals = [float(x) for x in weights_str.split(',')]
     if abs(sum(w_vals) - 1.0) > 0.01:
         w_vals = [v / sum(w_vals) for v in w_vals]
-    weights = dict(zip(['value','growth','quality','momentum','risk'], w_vals))
+    weights = dict(zip(['value', 'growth', 'quality', 'momentum', 'risk'], w_vals))
 
     factor_df = calculate_all_factors(
         data['spot_filtered'], data['financial'], data['financial_prev'],
@@ -55,9 +59,9 @@ def main():
     top20 = scored_df.head(20).copy()
     print(f"\n📊 TOP 20 股票:")
     for i, row in top20.iterrows():
-        print(f"  {int(row.get('rank', 0)):>3}. {str(row.get('code','')).zfill(6)} {row.get('name','')}  得分{row.get('composite_score',0):.2f}")
+        print(f"  {int(row.get('rank', 0)):>3}. {str(row.get('code', '')).zfill(6)} {row.get('name', '')}  得分{row.get('composite_score', 0):.2f}")
 
-    # ---- 3. 逐只回测 ----
+    # ---- 3. 逐只回测 (策略由 config 决定) ----
     from trading_engine import backtest_single_stock
 
     print(f"\n📈 逐只回测 ({START} ~ {END})...")
@@ -65,9 +69,11 @@ def main():
     for idx, row in top20.iterrows():
         code = str(row['code']).zfill(6)
         name = str(row.get('name', ''))
+        cfg_s = dict(tr_cfg)
+        cfg_s['strategy'] = strategy  # 从 strategies/ 注册表选择
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            r = backtest_single_stock(code, data['history'], tr_cfg, START, END)
+            r = backtest_single_stock(code, data['history'], cfg_s, START, END)
         if r is None:
             print(f"  ⚠ {code} {name}: 回测失败/无数据")
             continue
@@ -80,11 +86,11 @@ def main():
             'final_value': st['final_value'],
             'trades_detail': [t for t in r['trades'] if t.direction == 'SELL'],
         })
-        print(f"  ✅ {code} {name}: {st['total_return']:+.2%}  Sharpe {st['sharpe']:.2f}  回撤{st['max_drawdown']:.1%}  {st['total_trades']}笔  胜率{st['win_rate']:.0%}")
+        print(f"  ✅ {code} {name}: {st['total_return']:+.2%}  Sharpe {st['sharpe']:.2f}  {st['total_trades']}笔  胜率{st['win_rate']:.0%}")
 
     # ---- 4. 汇总 ----
     print("\n" + "═" * 100)
-    print("  汇总 (20支, 每支独立满仓回测)")
+    print(f"  汇总 ({strategy_label(strategy)}, 每支独立满仓)")
     print("═" * 100)
     print(f"  {'代码':<8} {'名称':<8} {'总收益':>9} {'年化':>8} {'Sharpe':>7} {'最大回撤':>8} {'交易':>4} {'胜率':>6} {'期末资金':>11}")
     print("  " + "─" * 88)
@@ -93,7 +99,6 @@ def main():
               f"{r['sharpe']:>7.2f} {r['max_drawdown']:>8.1%} {r['trades']:>4d} {r['win_rate']:>6.0%} ¥{r['final_value']:>10,.0f}")
 
     if results:
-        import numpy as np
         rets = [r['total_return'] for r in results]
         wins = sum(1 for r in rets if r > 0)
         print("  " + "─" * 88)
@@ -103,4 +108,10 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    strategy = 'reversal'
+    for i, arg in enumerate(sys.argv):
+        if arg == '--strategy' and i + 1 < len(sys.argv):
+            strategy = sys.argv[i + 1]
+        elif arg.startswith('--strategy='):
+            strategy = arg.split('=')[1]
+    main(strategy)

@@ -17,6 +17,9 @@ from datetime import datetime, timedelta
 
 import plotly.graph_objects as go
 
+from strategies import get_strategy, strategy_label
+import plotly.graph_objects as go
+
 
 # ============================================================
 # 技术指标计算
@@ -126,279 +129,6 @@ def compute_indicators(closes, volumes=None, highs=None, lows=None):
 
 
 # ============================================================
-# 交易信号
-# ============================================================
-
-def check_buy_signal(ind):
-    """
-    龙头股 + SKDJ超卖金叉买入
-
-    龙头已通过scored_df排名筛选(TOP50), 这里只需判断SKDJ时机:
-    - 必须: SKDJ金叉 + K<35 (超卖区)
-    - 加分: J超卖, 缩量回调, MA60支撑, 长期趋势
-    """
-    score = 0
-    reasons = []
-
-    price = ind.get('close', 0)
-    if price <= 0:
-        return False, 0, ''
-
-    k = ind['skdj_k']
-    j = ind['skdj_j']
-    cross = ind['skdj_cross']
-
-    # ---- SKDJ金叉 (必须) ----
-    if cross != 1:
-        return False, 0, ''
-
-    # ---- 超卖区 ----
-    if k > 50:
-        return False, 0, ''
-
-    if k < 15:
-        score += 5
-        reasons.append(f'深度超卖金叉(K={k:.0f})')
-    elif k < 25:
-        score += 4
-        reasons.append(f'超卖金叉(K={k:.0f})')
-    elif k < 35:
-        score += 3
-        reasons.append(f'低位金叉(K={k:.0f})')
-    else:
-        score += 2
-        reasons.append(f'中位金叉(K={k:.0f})')
-
-    # J值加分
-    if j < -10:
-        score += 2
-        reasons.append(f'J极超卖({j:.0f})')
-    elif j < 0:
-        score += 1
-        reasons.append(f'J超卖({j:.0f})')
-
-    # 缩量回调 (龙头洗盘)
-    vol_ratio = ind.get('vol_ratio', 1.0)
-    if vol_ratio < 0.7:
-        score += 2
-        reasons.append(f'缩量洗盘({vol_ratio:.1f}x)')
-    elif vol_ratio < 0.9:
-        score += 1
-        reasons.append(f'缩量({vol_ratio:.1f}x)')
-
-    # MA60支撑
-    ma60 = ind.get('ma60', 0)
-    if not np.isnan(ma60) and ma60 > 0:
-        dist = (price - ma60) / ma60
-        if -0.03 < dist < 0.03:
-            score += 1
-            reasons.append('MA60支撑')
-
-    # 长期趋势
-    ma120 = ind.get('ma120', 0)
-    if not np.isnan(ma120) and price > ma120:
-        score += 1
-        reasons.append('长期↑')
-
-    is_buy = score >= 6
-    return is_buy, score, '+'.join(reasons)
-
-
-def check_buy_signal_reversal(ind):
-    """
-    弱转强趋势策略 (重仓持有模式)
-
-    买入条件 (周线判断: 先判断金叉/死叉是否出现, 再判断高低位):
-    1. 周线SKDJ金叉 (K>D, 周线止跌信号) — 必须
-    2. 周线SKDJ低位 (K<40, 底部区域) — 必须
-    3. 日线MACD金叉 (阴转阳) 或 日线SKDJ低位金叉
-    """
-    score = 0
-    reasons = []
-
-    price = ind.get('skdj_close', ind.get('close', 0))
-    k = ind.get('skdj_k', 50)
-    skdj_cross = ind.get('skdj_cross', 0)
-    macd_cross = ind.get('macd_cross', 0)
-    macd_hist = ind.get('macd_hist', 0)
-    ma5 = ind.get('ma5', 0)
-    ma5_prev = ind.get('ma5_prev', 0)
-
-    # 条件0: 周线判断 — 触底确认 (四个要素)
-    # 用冻结视图(上一完成周的最终值): 周线金叉/死叉以上周收盘确认, 与行情软件一致
-    weekly_k = ind.get('skdj_weekly_k', 50)              # 冻结周线K
-    weekly_d = ind.get('skdj_weekly_d', 50)              # 冻结周线D
-    k_minus_d = weekly_k - weekly_d
-    close = ind.get('skdj_close', ind.get('close', 0))
-    boll_low = ind.get('wk_boll_low', 0)
-
-    # 要素2 (必须): 周线SKDJ触底 — K<20 且 0<K-D<5 (K刚上穿D, 股价触底)
-    if not (weekly_k < 20 and 0 < k_minus_d < 5):
-        return False, 0, f'周线SKDJ未触底(K={weekly_k:.0f} K-D={k_minus_d:.1f})'
-
-    # 要素3 (必须): 周线MACD止跌增长 (DIF-DEA较前日上涨)
-    if not ind.get('wk_macd_rise', False):
-        return False, 0, '周线MACD未止跌'
-
-    # 周线MACD深死叉 (DIF-DEA<-0.02) 不交易: 周线级别还在深跌, 行情不确定
-    wk_diff = ind.get('wk_dif_dea', 0)
-    if wk_diff < -0.02:
-        return False, 0, f'周线MACD深死叉(DIF-DEA={wk_diff:.3f})不做'
-
-    # 要素1 (必须): 价格贴近/低于周线BOLL下轨 (超卖区) — 未跌透的假触底不做
-    if boll_low <= 0 or close > boll_low * 1.05:
-        return False, 0, f'价格未到周线超卖区(价/下轨={close / boll_low:.2f})' if boll_low > 0 else '周线BOLL无数据'
-
-    score += 4
-    reasons.append(f'周线SKDJ触底(K={weekly_k:.0f} K-D={k_minus_d:.1f})+MACD止跌+周线超卖')
-
-    # 要素1 加强 (加分): 跌破BOLL下轨 — 深度超卖
-    if close < boll_low:
-        score += 1
-        reasons.append('周线破BOLL下轨')
-
-    # 要素4 (加分): 周线MA5止跌转涨
-    if ind.get('wk_ma5_rise', False):
-        score += 1
-        reasons.append('周线MA5拐头')
-
-    # 日线BOLL下轨下方 (日线超卖, 可做反弹) — 加分项
-    boll_low_d = ind.get('boll_low', 0)
-    if boll_low_d > 0 and close < boll_low_d:
-        score += 1
-        reasons.append('日线破BOLL下轨')
-
-    # 条件1: 日线MACD金叉 (阴转阳) - 核心买入信号 (必须)
-    if macd_cross == 1:
-        score += 3
-        reasons.append(f'MACD阴转阳金叉(DIF={ind.get("dif", 0):.3f})')
-    else:
-        # 右侧确认 (金叉前的趋势反转): MA5止跌转涨 且 DIF-DEA较前一日上涨
-        # (替代左侧的"阴线缩"抄底信号, 符合右侧交易原则)
-        if ma5 > ma5_prev and ind.get('hist_rise', False):
-            score += 2
-            reasons.append('MA5拐头+DIF回升')
-        else:
-            return False, 0, ''
-
-    # 条件2 (必须): 日线SKDJ近3天无死叉 (周线定趋势, 日线定买卖点)
-    if skdj_cross == -1:
-        return False, 0, f'日线SKDJ死叉(K={k:.0f})'
-
-    # 条件3 (必须): 日线SKDJ高位 (K>65) 不买 - 不在高位追入
-    if k > 65:
-        return False, 0, f'日线SKDJ高位(K={k:.0f})'
-
-    # 加分: 日线SKDJ低位金叉 (K<40)
-    if skdj_cross == 1 and k < 40:
-        score += 2
-        reasons.append(f'日线SKDJ低位金叉(K={k:.0f})')
-
-    # 额外加分: MA5拐头
-    if not np.isnan(ma5) and not np.isnan(ma5_prev) and ma5 > ma5_prev:
-        score += 1
-        reasons.append('MA5↑')
-
-    is_buy = score >= 4
-    return is_buy, score, '+'.join(reasons)
-
-
-def check_sell_signal_reversal(ind, entry_price, holding_days, max_profit_seen=0):
-    """
-    趋势跟踪卖出信号 (持有到趋势结束)
-
-    卖出条件 (任一触发):
-    1. 周线SKDJ高位死叉 (K>60且K下穿D) — 最强卖出
-    2. 日线SKDJ高位死叉 (K>60且K下穿D)
-    3. 止损: -5%
-    """
-    price = ind.get('skdj_close', ind.get('close', 0))
-    pnl = (price / entry_price - 1) if entry_price > 0 else 0
-    k = ind.get('skdj_k', 50)
-    skdj_cross = ind.get('skdj_cross', 0)
-
-    # 条件1: 周线SKDJ高位死叉 (K>60且死叉) — 最强卖出信号
-    weekly_k = ind.get('skdj_weekly_k', 50)
-    weekly_cross = ind.get('skdj_weekly_cross', 0)
-    if weekly_k > 60 and weekly_cross == -1:
-        return True, f'周线SKDJ高位死叉(K={weekly_k:.0f})'
-
-    # 条件2: 日线SKDJ高位死叉 (K>60且死叉)
-    if k > 60 and skdj_cross == -1:
-        return True, f'日线SKDJ高位死叉(K={k:.0f})'
-
-    # 条件3: 止损
-    if pnl <= -0.05:
-        return True, f'止损({pnl:.1%})'
-
-    return False, ''
-
-
-def check_rebound_signal(ind, prev_close=None):
-    """
-    短线超跌反弹买点 (日线BOLL明显超卖)
-
-    买入条件 (全部满足):
-    1. 收盘价明显跌破日线BOLL下轨 (价/下轨 < 0.97, 深跌破轨=明显超跌)
-    2. 当日跌幅 >= 4% (急跌超卖, 非阴跌)
-    3. 周线SKDJ低位 (K<20, 周线级别超卖确认)
-
-    卖出: 反弹到日线BOLL中轨(MA20) 或 持有5个交易日到期
-    """
-    close = ind.get('skdj_close', ind.get('close', 0))
-    boll_low = ind.get('boll_low', 0)
-    if boll_low <= 0 or close >= boll_low * 0.97:
-        return False, ''
-
-    # 当日跌幅 (前一交易日收盘, 必须可计算)
-    prev_close = prev_close if prev_close is not None else ind.get('prev_close', 0)
-    if prev_close <= 0:
-        return False, ''
-    chg = close / prev_close - 1
-    if chg > -0.04:
-        return False, ''
-
-    weekly_k = ind.get('skdj_weekly_k', 50)  # 冻结周线K (上周收盘确认)
-    if weekly_k >= 20:
-        return False, ''
-
-    return True, f'日线破BOLL下轨超卖(跌{chg:.1%})+周线超跌(K={weekly_k:.0f})'
-
-
-def check_sell_signal(ind, entry_price, holding_days, max_profit_seen=0):
-    """
-    SKDJ卖出信号
-    1. SKDJ超买死叉 (K>65)
-    2. 止盈 >= 5%
-    3. 止损 >= -3%
-    4. J超买 + 盈利
-    5. 到期 >= 8天
-    """
-    price = ind.get('close', 0)
-    pnl = (price / entry_price - 1) if entry_price > 0 else 0
-    k = ind['skdj_k']
-    cross = ind['skdj_cross']
-    j = ind['skdj_j']
-
-    if cross == -1 and k > 65:
-        return True, f'SKDJ超买死叉(K={k:.0f})'
-
-    if pnl >= 0.08:
-        return True, f'止盈({pnl:.1%})'
-
-    if pnl <= -0.03:
-        return True, f'止损({pnl:.1%})'
-
-    if j > 100 and pnl > 0:
-        return True, f'J超买(J={j:.0f},{pnl:+.1%})'
-
-    if holding_days >= 20:
-        return True, f'到期({holding_days}天{pnl:+.1%})'
-
-    return False, ''
-
-
-# ============================================================
 # 交易引擎
 # ============================================================
 
@@ -461,17 +191,17 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     take_profit = config.get('take_profit', 0.20)
     max_holding_days = config.get('max_holding_days', 40)
     min_buy_score = config.get('min_buy_score', 5)
-    strategy = config.get('strategy', 'momentum')  # momentum or reversal
+    strategy = config.get('strategy', 'reversal')  # 从 strategies/ 注册表选择
 
-    # 选择策略函数
-    if strategy == 'reversal':
-        buy_signal_func = check_buy_signal_reversal
-        sell_signal_func = check_sell_signal_reversal
-        print(f"  策略: 弱转强趋势 (MACD+SKDJ双金叉, 重仓持有)")
-    else:
-        buy_signal_func = check_buy_signal
-        sell_signal_func = check_sell_signal
-        print(f"  策略: 动量趋势")
+    # 从策略注册表加载策略 (config.json trading.strategy 配置)
+    strat = get_strategy(strategy)
+    buy_signal_func = strat.buy_signal
+    sell_signal_func = strat.sell_signal
+    from strategies.base import BaseStrategy  # 判断是否覆写了rebound
+    has_rebound = type(strat).rebound_signal is not BaseStrategy.rebound_signal
+    if has_rebound:
+        rebound_signal_func = strat.rebound_signal
+    print(f"  策略: {strategy_label(strategy)}")
 
     start_date = pd.Timestamp(start_date_str)
     end_date = pd.Timestamp(end_date_str)
@@ -491,11 +221,11 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     candidate_codes = []
     candidate_set = set()
 
-    if strategy == 'reversal':
-        # 反转策略: 扫描全部股票 (超跌机会 anywhere)
+    if strategy in ('reversal', 'bollinger'):
+        # 全市场扫描策略: 超跌/破轨机会 anywhere
         candidate_codes = list(pure_to_sina.keys())
         candidate_set = set(candidate_codes)
-        print(f"  候选: 全部 {len(candidate_codes)} 只 (反转策略扫描全市场)")
+        print(f"  候选: 全部 {len(candidate_codes)} 只 (全市场扫描)")
     else:
         # 动量策略: 综合排名TOP30 + 动量排名TOP30
         if scored_df is not None and 'code' in scored_df.columns:
@@ -684,14 +414,14 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 is_buy, score, reason = buy_signal_func(ind)
                 entry_type = 'swing'
 
-                if not is_buy:
+                if not is_buy and has_rebound:
                     # 短线超跌反弹买点: 日线破BOLL下轨 + 急跌 + 周线超卖
                     prev_close = None
                     if precomputed and code in precomputed and day_idx > 0:
                         pv = precomputed[code].get(trading_dates[day_idx - 1].strftime('%Y-%m-%d'))
                         if pv:
                             prev_close = pv.get('close', 0)
-                    is_rebound, rebound_reason = check_rebound_signal(ind, prev_close)
+                    is_rebound, rebound_reason = rebound_signal_func(ind, prev_close)
                     if is_rebound:
                         is_buy, score, reason, entry_type = True, 4, rebound_reason, 'rebound'
 

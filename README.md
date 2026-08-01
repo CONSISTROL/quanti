@@ -78,10 +78,36 @@ python main.py --optimize
 ### 4️⃣ 多股批量回测（实验工具）
 
 ```bash
-python run_20_stocks.py
+python run_20_stocks.py                    # 默认reversal策略
+python run_20_stocks.py --strategy bollinger   # 指定策略
 ```
 
-用多因子评分选出 TOP 20 股票，逐只独立满仓回测并汇总对比（选股/回测区间可在脚本顶部修改）。
+用多因子评分选出 TOP 20 股票，逐只独立满仓回测并汇总（选股/回测区间可在脚本顶部修改）。
+
+## 策略架构（strategies/ 注册表）
+
+所有策略放在 `strategies/` 文件夹，每个策略一个文件，继承 `BaseStrategy` 接口：
+
+```python
+class 策略名(BaseStrategy):
+    name = '策略名'           # config.json 中 trading.strategy 配置此值
+    label = '显示名称'
+    def buy_signal(self, ind, **ctx): ...      # 买入: (is_buy, score, reason)
+    def sell_signal(self, ind, entry_price, holding_days, max_profit_seen): ...  # 卖出: (is_sell, reason)
+    def rebound_signal(self, ind, prev_close): ...  # 可选: 短线超跌反弹买点
+```
+
+**通过 `config.json` 的 `trading.strategy` 选择策略**，新增策略只需在 `strategies/` 加文件并在 `__init__.py` 注册：
+
+| 策略 | 名称 | 特点 |
+|------|------|------|
+| **reversal**（默认）| 弱转强趋势 | 周线触底四要素+日线右侧确认+超跌反弹，吃完整波段 |
+| **momentum** | 动量趋势 | 龙头股 SKDJ 超卖金叉，快进快出 |
+| **bollinger** | 布林线均值回归 | 收盘≤下轨买、≥中轨或亏5%卖，适合震荡股 |
+
+```json
+"trading": { "strategy": "reversal" }   // reversal / momentum / bollinger
+```
 
 ## 交易体系
 
@@ -176,8 +202,14 @@ Sharpe:     2.30
 
 ```
 ├── main.py              # 入口 (python main.py / --stock / --optimize)
-├── config.json          # 配置 (所有参数)
-├── trading_engine.py    # 波段交易引擎 (买卖信号+回测, 个股回测)
+├── config.json          # 配置 (所有参数, 含策略选择)
+├── strategies/          # 策略注册表 (config trading.strategy 选择)
+│   ├── __init__.py      #   注册表: reversal/momentum/bollinger
+│   ├── base.py          #   策略基类 (buy_signal/sell_signal/rebound_signal)
+│   ├── reversal.py      #   弱转强趋势 (周线触底四要素+右侧确认+超跌反弹)
+│   ├── momentum.py      #   动量趋势 (龙头+SKDJ超卖金叉)
+│   └── bollinger.py     #   布林线均值回归
+├── trading_engine.py    # 波段交易引擎 (回测, 按config选择策略)
 ├── indicator_cache.py   # 指标预计算与缓存 (SKDJ/MACD/周线, 秒级加载)
 ├── data_fetcher.py      # 数据采集 (AkShare, 缓存)
 ├── factor_model.py      # 因子计算+打分
