@@ -27,3 +27,8 @@ venv/
 # OS
 Thumbs.db
 .DS_Store
+
+# 日志/输出文件
+*.log
+opt_result.txt
+optimize_output.txt
