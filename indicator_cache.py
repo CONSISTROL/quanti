@@ -104,6 +104,20 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
         if pos > 0:
             prev_week_final[i] = week_last_idx[week_order[pos - 1]]
 
+    # 动态周线MACD (当前部分周收盘价增量更新EMA12/26/9, 与行情软件一致)
+    wk_dif_dea = np.full(n, np.nan)
+    w_ema12, w_ema26, w_dea = None, None, None
+    for i in range(n):
+        wc = closes[i]  # 周内动态收盘
+        if w_ema12 is None:
+            w_ema12, w_ema26, w_dea = wc, wc, wc
+        else:
+            w_ema12 = _ema_incremental(w_ema12, wc, 12)
+            w_ema26 = _ema_incremental(w_ema26, wc, 26)
+        w_dif = w_ema12 - w_ema26
+        w_dea = _ema_incremental(w_dea, w_dif, 9)
+        wk_dif_dea[i] = w_dif - w_dea
+
     # 预计算日线SKDJ
     k_vals = np.full(n, 50.0)
     d_vals = np.full(n, 50.0)
@@ -333,6 +347,7 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             # 参考策略flags (动态周线视图 + 窗口聚合)
             'skdj_weekly_k_dyn': float(skdj_weekly_k[idx]),
             'skdj_weekly_d_dyn': float(skdj_weekly_d[idx]),
+            'wk_dif_dea': float(wk_dif_dea[idx]) if not np.isnan(wk_dif_dea[idx]) else 0,
             'k_up_win': bool(k_up_win_arr[idx]),
             'max_k_5d': float(max_k_5d_arr[idx]),
             'k_dn_win': bool(k_dn_win_arr[idx]),

@@ -234,6 +234,11 @@ def check_buy_signal_reversal(ind):
     if weekly_k >= 40:
         return False, 0, f'周线金叉但非低位(K={weekly_k:.0f})'
 
+    # 周线MACD深死叉 (DIF-DEA<-0.02) 不交易: 周线级别还在深跌, 行情不确定
+    wk_diff = ind.get('wk_dif_dea', 0)
+    if wk_diff < -0.02:
+        return False, 0, f'周线MACD深死叉(DIF-DEA={wk_diff:.3f})不做'
+
     score += 4
     reasons.append(f'周线低位金叉(K={weekly_k:.0f})')
 
@@ -253,6 +258,10 @@ def check_buy_signal_reversal(ind):
     # 条件2 (必须): 日线SKDJ近3天无死叉 (周线定趋势, 日线定买卖点)
     if skdj_cross == -1:
         return False, 0, f'日线SKDJ死叉(K={k:.0f})'
+
+    # 条件3 (必须): 日线SKDJ高位 (K>65) 不买 - 不在高位追入
+    if k > 65:
+        return False, 0, f'日线SKDJ高位(K={k:.0f})'
 
     # 加分: 日线SKDJ低位金叉 (K<40)
     if skdj_cross == 1 and k < 40:
