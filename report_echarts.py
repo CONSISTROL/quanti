@@ -40,6 +40,7 @@ def generate_echarts_report(combo, per_stock, output_path):
     per_stock: {code: dict(name, eq, initial, trades, df, precomputed)}
     """
     # ---- 1. 净值对比数据 ----
+    # 统一日期轴 = 组合的完整日期; 每只个股按日期对齐 (上市前缺失位置填null)
     combo_dates, combo_nav = _eq_series(combo['eq'], combo['initial'])
     nav_series = [{
         'name': combo.get('name', '组合轮动'),
@@ -47,7 +48,9 @@ def generate_echarts_report(combo, per_stock, output_path):
     }]
     for code, ps in per_stock.items():
         d, n = _eq_series(ps['eq'], ps['initial'])
-        nav_series.append({'name': f'{code} {ps["name"]}', 'dates': d, 'nav': n, 'bold': False})
+        stock_map = dict(zip(d, n))
+        aligned = [stock_map.get(dd) for dd in combo_dates]  # 缺失→None(ECharts断线)
+        nav_series.append({'name': f'{code} {ps["name"]}', 'dates': combo_dates, 'nav': aligned, 'bold': False})
 
     # ---- 2. 收益柱状数据 ----
     bar_data = [{'name': combo.get('name', '组合轮动'), 'value': round(combo['stats']['total_return'] * 100, 1)}]
