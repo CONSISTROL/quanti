@@ -335,10 +335,10 @@ def check_sell_signal_reversal(ind, entry_price, holding_days, max_profit_seen=0
 
 def check_rebound_signal(ind, prev_close=None):
     """
-    短线超跌反弹买点 (日线BOLL超卖突破下轨)
+    短线超跌反弹买点 (日线BOLL明显超卖)
 
     买入条件 (全部满足):
-    1. 收盘价跌破日线BOLL下轨 (超卖)
+    1. 收盘价明显跌破日线BOLL下轨 (价/下轨 < 0.97, 深跌破轨=明显超跌)
     2. 当日跌幅 >= 4% (急跌超卖, 非阴跌)
     3. 周线SKDJ低位 (K<20, 周线级别超卖确认)
 
@@ -346,7 +346,7 @@ def check_rebound_signal(ind, prev_close=None):
     """
     close = ind.get('skdj_close', ind.get('close', 0))
     boll_low = ind.get('boll_low', 0)
-    if boll_low <= 0 or close >= boll_low:
+    if boll_low <= 0 or close >= boll_low * 0.97:
         return False, ''
 
     # 当日跌幅 (前一交易日收盘, 必须可计算)
