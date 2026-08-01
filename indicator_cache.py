@@ -311,6 +311,13 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
     hist_rise_win_arr = _any_win(hist_up_arr, 3)                                # b_yin_days=3
     hist_fall_win_arr = _all_win(hist_dn_arr, 2)                                # s_yang_days=2
 
+    # 日线BOLL (20, 2σ)
+    boll_low_arr = np.full(n, np.nan)
+    for i in range(19, n):
+        m20 = np.mean(closes[i - 19:i + 1])
+        s20 = np.std(closes[i - 19:i + 1])
+        boll_low_arr[i] = m20 - 2 * s20
+
     # 60日最高价 + 连续3天未创新高
     hh60_arr = _roll_max_arr(closes, 60)
     no_new_high3_arr = np.zeros(n, dtype=bool)
@@ -384,6 +391,7 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             'wk_ma5': float(wk_ma5[idx]) if not np.isnan(wk_ma5[idx]) else 0,
             'wk_ma5_rise': bool(wk_ma5_rise[idx]),         # 周线MA5较前日增长 (止跌转涨)
             'wk_boll_low': float(wk_boll_low[idx]) if not np.isnan(wk_boll_low[idx]) else 0,
+            'boll_low': float(boll_low_arr[idx]) if not np.isnan(boll_low_arr[idx]) else 0,
             'k_up_win': bool(k_up_win_arr[idx]),
             'max_k_5d': float(max_k_5d_arr[idx]),
             'k_dn_win': bool(k_dn_win_arr[idx]),

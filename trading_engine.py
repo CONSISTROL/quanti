@@ -261,6 +261,12 @@ def check_buy_signal_reversal(ind):
         score += 1
         reasons.append('周线MA5拐头')
 
+    # 日线BOLL下轨下方 (日线超卖, 可做反弹) — 加分项
+    boll_low_d = ind.get('boll_low', 0)
+    if boll_low_d > 0 and close < boll_low_d:
+        score += 1
+        reasons.append('日线破BOLL下轨')
+
     # 条件1: 日线MACD金叉 (阴转阳) - 核心买入信号 (必须)
     if macd_cross == 1:
         score += 3
