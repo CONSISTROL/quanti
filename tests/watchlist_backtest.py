@@ -13,8 +13,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 WATCH_NAMES = {
-    '601857': '中国石油', '159381': '创业板AI ETF', '588170': '科创半导体ETF',
-    '600547': '山东黄金', '513580': '恒生科技ETF',
+    '601857': '中国石油',
+    '159381': '创业板AI ETF',
+    '588170': '科创半导体ETF',
+    '600547': '山东黄金',
+    '513580': '恒生科技ETF',
+    '518880': '黄金ETF华安',
+    '159941': '纳指ETF广发',
+    '160723': '嘉实原油LOF'
 }
 
 
