@@ -225,8 +225,9 @@ def check_buy_signal_reversal(ind):
     ma5_prev = ind.get('ma5_prev', 0)
 
     # 条件0: 周线判断 — 触底确认 (四个要素)
-    weekly_k = ind.get('skdj_weekly_k_dyn', 50)          # 动态周线K
-    weekly_d = ind.get('skdj_weekly_d_dyn', 50)          # 动态周线D
+    # 用冻结视图(上一完成周的最终值): 周线金叉/死叉以上周收盘确认, 与行情软件一致
+    weekly_k = ind.get('skdj_weekly_k', 50)              # 冻结周线K
+    weekly_d = ind.get('skdj_weekly_d', 50)              # 冻结周线D
     k_minus_d = weekly_k - weekly_d
     close = ind.get('skdj_close', ind.get('close', 0))
     boll_low = ind.get('wk_boll_low', 0)
@@ -357,7 +358,7 @@ def check_rebound_signal(ind, prev_close=None):
     if chg > -0.04:
         return False, ''
 
-    weekly_k = ind.get('skdj_weekly_k_dyn', 50)
+    weekly_k = ind.get('skdj_weekly_k', 50)  # 冻结周线K (上周收盘确认)
     if weekly_k >= 20:
         return False, ''
 
