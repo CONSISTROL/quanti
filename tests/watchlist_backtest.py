@@ -124,41 +124,38 @@ def main(config=None):
                   f"{st['annual_return']:>+8.2%} {st['sharpe']:>7.2f} "
                   f"{st['max_drawdown']:>8.1%} {st['total_trades']:>4d} {st['win_rate']:>6.0%}")
 
-        # ---- 6. 组合 vs 个股净值对比图 ----
+        # ---- 6. ECharts可视化报告 (净值对比+收益柱状+K线含买卖点) ----
+        from data_fetcher import _code_pure
+        sina_map = {_code_pure(k): k for k in hist}
         try:
-            import plotly.graph_objects as go
-            fig = go.Figure()
-            # 组合净值
-            eq = result.get('equity_curve', [])
-            if eq:
-                dates = [pd.Timestamp(e[0]) for e in eq]
-                nav = [e[1] / result['initial_capital'] for e in eq]
-                fig.add_trace(go.Scatter(x=dates, y=nav, name='组合轮动',
-                                         line=dict(color='#e74c3c', width=3)))
-            # 每只个股净值
-            colors = ['#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#e67e22']
-            for i, (code, r) in enumerate(per_stock.items()):
-                eq = r.get('equity_curve', [])
-                if not eq:
-                    continue
-                dates = [pd.Timestamp(e[0]) for e in eq]
-                nav = [e[1] / r['initial_capital'] for e in eq]
-                fig.add_trace(go.Scatter(x=dates, y=nav, name=f'{code} {names.get(code, "")}',
-                                         line=dict(color=colors[i % len(colors)], width=1.5)))
-            fig.add_hline(y=1.0, line_dash='dash', line_color='#94a3b8', line_width=1)
-            fig.update_layout(
-                title='自选池: 组合轮动 vs 每只个股独立满仓净值对比',
-                xaxis=dict(title='日期'), yaxis=dict(title='净值 (初始=1)'),
-                height=450, margin=dict(t=50, b=30, l=50, r=20),
-                legend=dict(orientation='h', y=1.12, x=0.5, xanchor='center'),
-                font=dict(size=12),
-            )
+            from report_echarts import generate_echarts_report
             from datetime import datetime
-            perf_path = f'report_watchlist_perf_{datetime.now().strftime("%Y%m%d")}.html'
-            fig.write_html(perf_path)
-            print(f'\n  ✅ 对比图: {os.path.abspath(perf_path)}')
+            combo = {
+                'eq': result.get('equity_curve', []),
+                'initial': result['initial_capital'],
+                'stats': result['stats'],
+                'trades': result['trades'],
+                'name': '组合轮动',
+            }
+            per = {}
+            for code, r in per_stock.items():
+                sina = sina_map.get(code)
+                per[code] = {
+                    'name': names.get(code, code),
+                    'eq': r.get('equity_curve', []),
+                    'initial': r['initial_capital'],
+                    'stats': r['stats'],
+                    'trades': r['trades'],
+                    'df': hist.get(sina),
+                    'precomputed': precomputed,
+                }
+            echarts_path = f'report_watchlist_echarts_{datetime.now().strftime("%Y%m%d")}.html'
+            generate_echarts_report(combo, per, echarts_path)
+            print(f'\n  ✅ ECharts报告: {os.path.abspath(echarts_path)}')
         except Exception as e:
-            print(f'\n  ⚠ 对比图生成失败: {e}')
+            import traceback
+            print(f'\n  ⚠ ECharts报告生成失败: {e}')
+            traceback.print_exc()
 
         # 生成HTML报告
         from report_generator import generate_html_report
