@@ -333,6 +333,37 @@ def check_sell_signal_reversal(ind, entry_price, holding_days, max_profit_seen=0
     return False, ''
 
 
+def check_rebound_signal(ind, prev_close=None):
+    """
+    短线超跌反弹买点 (日线BOLL超卖突破下轨)
+
+    买入条件 (全部满足):
+    1. 收盘价跌破日线BOLL下轨 (超卖)
+    2. 当日跌幅 >= 4% (急跌超卖, 非阴跌)
+    3. 周线SKDJ低位 (K<20, 周线级别超卖确认)
+
+    卖出: 反弹到日线BOLL中轨(MA20) 或 持有5个交易日到期
+    """
+    close = ind.get('skdj_close', ind.get('close', 0))
+    boll_low = ind.get('boll_low', 0)
+    if boll_low <= 0 or close >= boll_low:
+        return False, ''
+
+    # 当日跌幅 (前一交易日收盘, 必须可计算)
+    prev_close = prev_close if prev_close is not None else ind.get('prev_close', 0)
+    if prev_close <= 0:
+        return False, ''
+    chg = close / prev_close - 1
+    if chg > -0.04:
+        return False, ''
+
+    weekly_k = ind.get('skdj_weekly_k_dyn', 50)
+    if weekly_k >= 20:
+        return False, ''
+
+    return True, f'日线破BOLL下轨超卖(跌{chg:.1%})+周线超跌(K={weekly_k:.0f})'
+
+
 def check_sell_signal(ind, entry_price, holding_days, max_profit_seen=0):
     """
     SKDJ卖出信号
@@ -372,13 +403,14 @@ def check_sell_signal(ind, entry_price, holding_days, max_profit_seen=0):
 
 class Position:
     """持仓"""
-    def __init__(self, code, name, entry_price, entry_date, shares, capital):
+    def __init__(self, code, name, entry_price, entry_date, shares, capital, entry_type='swing'):
         self.code = code
         self.name = name
         self.entry_price = entry_price
         self.entry_date = entry_date
         self.shares = shares
         self.capital = capital  # 投入资金
+        self.entry_type = entry_type  # 'swing'=波段主仓 / 'rebound'=短线超跌反弹仓
 
     def pnl(self, current_price):
         return (current_price / self.entry_price - 1) if self.entry_price > 0 else 0
@@ -570,6 +602,17 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 to_sell.append((pos, ind['close'], f'持有{holding_days}天到期'))
                 continue
 
+            # 短线超跌反弹仓: 反弹到日线MA20 或 持有5个交易日到期
+            if pos.entry_type == 'rebound':
+                close_price = ind.get('skdj_close', ind.get('close', 0))
+                ma20 = ind.get('ma20', 0)
+                if holding_days >= 5:
+                    to_sell.append((pos, ind['close'], f'反弹到期({holding_days}天)'))
+                    continue
+                if holding_days >= 2 and ma20 > 0 and close_price >= ma20:
+                    to_sell.append((pos, ind['close'], f'反弹到MA20({ma20:.2f})'))
+                    continue
+
             is_sell, reason = sell_signal_func(ind, pos.entry_price, holding_days,
                                                max_profit_tracker.get(pos.code, 0))
             if is_sell:
@@ -638,6 +681,18 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     ind = compute_indicators(closes, volumes_arr, highs_arr, lows_arr)
 
                 is_buy, score, reason = buy_signal_func(ind)
+                entry_type = 'swing'
+
+                if not is_buy:
+                    # 短线超跌反弹买点: 日线破BOLL下轨 + 急跌 + 周线超卖
+                    prev_close = None
+                    if precomputed and code in precomputed and day_idx > 0:
+                        pv = precomputed[code].get(trading_dates[day_idx - 1].strftime('%Y-%m-%d'))
+                        if pv:
+                            prev_close = pv.get('close', 0)
+                    is_rebound, rebound_reason = check_rebound_signal(ind, prev_close)
+                    if is_rebound:
+                        is_buy, score, reason, entry_type = True, 4, rebound_reason, 'rebound'
 
                 # 龙头加分: 综合排名TOP10额外+2分
                 if scored_df is not None and 'code' in scored_df.columns:
@@ -655,11 +710,11 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                         match = scored_df[scored_df['code'].astype(str).str.zfill(6) == code]
                         if not match.empty:
                             name = str(match.iloc[0].get('name', ''))
-                    buy_candidates.append((code, name, ind['close'], score, reason))
+                    buy_candidates.append((code, name, ind['close'], score, reason, entry_type))
 
             # 按信号强度排序, 买入前 available_slots 个
             buy_candidates.sort(key=lambda x: x[3], reverse=True)
-            for code, name, buy_price, score, reason in buy_candidates[:available_slots]:
+            for code, name, buy_price, score, reason, entry_type in buy_candidates[:available_slots]:
                 alloc = cash * (calc_kelly_fraction() if kelly_mode else position_pct)
                 if alloc < buy_price * 100:  # 至少买1手
                     continue
@@ -668,7 +723,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     continue
                 amount = shares * buy_price
                 cash -= amount
-                positions.append(Position(code, name, buy_price, today, shares, amount))
+                positions.append(Position(code, name, buy_price, today, shares, amount, entry_type))
                 trades.append(TradeRecord(
                     code, name, 'BUY', buy_price, today, shares, amount, reason
                 ))

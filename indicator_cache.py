@@ -392,6 +392,7 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             'wk_ma5_rise': bool(wk_ma5_rise[idx]),         # 周线MA5较前日增长 (止跌转涨)
             'wk_boll_low': float(wk_boll_low[idx]) if not np.isnan(wk_boll_low[idx]) else 0,
             'boll_low': float(boll_low_arr[idx]) if not np.isnan(boll_low_arr[idx]) else 0,
+            'prev_close': float(closes[idx - 1]) if idx > 0 else 0,
             'k_up_win': bool(k_up_win_arr[idx]),
             'max_k_5d': float(max_k_5d_arr[idx]),
             'k_dn_win': bool(k_dn_win_arr[idx]),
