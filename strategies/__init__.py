@@ -5,16 +5,19 @@
   reversal  弱转强趋势 (周线触底四要素+右侧确认+超跌反弹) [默认]
   momentum  动量趋势 (龙头+SKDJ超卖金叉)
   bollinger 布林线均值回归 (收盘≤下轨买, ≥中轨卖)
+  watchlist 自选轮动 (强弱评分+单持仓满仓+卖弱买强, config watchlist 指定自选)
 """
 from .base import BaseStrategy
 from .reversal import ReversalStrategy
 from .momentum import MomentumStrategy
 from .bollinger import BollingerStrategy
+from .watchlist import WatchlistStrategy
 
 STRATEGIES = {
     'reversal': ReversalStrategy,
     'momentum': MomentumStrategy,
     'bollinger': BollingerStrategy,
+    'watchlist': WatchlistStrategy,
 }
 
 

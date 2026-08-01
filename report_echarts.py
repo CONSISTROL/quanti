@@ -1,0 +1,232 @@
+"""
+ECharts 可视化报告生成器 — 自选池轮动分析
+生成: 净值对比图 + 收益柱状图 + 个股K线(含买卖点)
+
+用法: from report_echarts import generate_echarts_report
+"""
+import json
+import pandas as pd
+
+ECHARTS_CDN = 'https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js'
+
+
+def _eq_series(eq, initial):
+    """equity_curve → (dates, nav) JS友好数据"""
+    dates = [pd.Timestamp(e[0]).strftime('%Y-%m-%d') for e in eq]
+    nav = [round(e[1] / initial, 4) for e in eq]
+    return dates, nav
+
+
+def _ohlc_and_ma(df, precomputed, code):
+    """个股K线 + MA + 买卖点"""
+    d = df.copy()
+    d['date'] = pd.to_datetime(d['date']).dt.strftime('%Y-%m-%d')
+    ohlc = [[row['date'], round(row['open'], 3), round(row['close'], 3),
+             round(row['low'], 3), round(row['high'], 3)] for _, row in d.iterrows()]
+
+    ma5, ma20, boll = [], [], []
+    pc = precomputed.get(code, {})
+    for date in d['date']:
+        v = pc.get(date, {})
+        ma5.append(round(v.get('ma5', 0), 3) if v.get('ma5') else None)
+        ma20.append(round(v.get('ma20', 0), 3) if v.get('ma20') else None)
+        boll.append(round(v.get('boll_low', 0), 3) if v.get('boll_low') else None)
+    return ohlc, ma5, ma20, boll
+
+
+def generate_echarts_report(combo, per_stock, output_path):
+    """
+    combo: dict(eq=[(date,value)], initial, stats, trades, name='组合轮动')
+    per_stock: {code: dict(name, eq, initial, trades, df, precomputed)}
+    """
+    # ---- 1. 净值对比数据 ----
+    combo_dates, combo_nav = _eq_series(combo['eq'], combo['initial'])
+    nav_series = [{
+        'name': combo.get('name', '组合轮动'),
+        'dates': combo_dates, 'nav': combo_nav, 'bold': True,
+    }]
+    for code, ps in per_stock.items():
+        d, n = _eq_series(ps['eq'], ps['initial'])
+        nav_series.append({'name': f'{code} {ps["name"]}', 'dates': d, 'nav': n, 'bold': False})
+
+    # ---- 2. 收益柱状数据 ----
+    bar_data = [{'name': combo.get('name', '组合轮动'), 'value': round(combo['stats']['total_return'] * 100, 1)}]
+    for code, ps in per_stock.items():
+        bar_data.append({'name': f'{code} {ps["name"]}',
+                         'value': round(ps['stats']['total_return'] * 100, 1)})
+
+    # ---- 3. K线数据 (每只) ----
+    kline_data = []
+    for code, ps in per_stock.items():
+        ohlc, ma5, ma20, boll = _ohlc_and_ma(ps['df'], ps.get('precomputed', {}), code)
+        buys = [{'date': pd.Timestamp(t.date).strftime('%Y-%m-%d'), 'price': round(t.price, 3)}
+                for t in ps['trades'] if t.direction == 'BUY']
+        sells = [{'date': pd.Timestamp(t.date).strftime('%Y-%m-%d'), 'price': round(t.price, 3)}
+                 for t in ps['trades'] if t.direction == 'SELL']
+        kline_data.append({'code': code, 'name': ps['name'], 'ohlc': ohlc,
+                           'ma5': ma5, 'ma20': ma20, 'boll': boll, 'buys': buys, 'sells': sells})
+
+    payload = {
+        'nav_series': nav_series,
+        'bar_data': bar_data,
+        'kline_data': kline_data,
+        'stats': {k: (round(v * 100, 2) if isinstance(v, float) and k in ('total_return', 'annual_return', 'max_drawdown', 'win_rate') else v)
+                  for k, v in combo['stats'].items()},
+        'initial': combo['initial'],
+    }
+
+    html = f"""<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>自选池轮动分析</title>
+<script src="{ECHARTS_CDN}"></script>
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ background: #f0f2f5; font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; color: #1f2329; }}
+  .header {{ background: linear-gradient(135deg, #1e3a5f 0%, #2c5f8a 100%); color: #fff; padding: 24px 32px; }}
+  .header h1 {{ font-size: 22px; font-weight: 600; }}
+  .header .sub {{ opacity: .8; font-size: 13px; margin-top: 6px; }}
+  .stats {{ display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap; }}
+  .stat {{ background: rgba(255,255,255,.12); border-radius: 8px; padding: 10px 18px; min-width: 110px; }}
+  .stat .v {{ font-size: 20px; font-weight: 700; }}
+  .stat .l {{ font-size: 12px; opacity: .75; }}
+  .container {{ max-width: 1200px; margin: 20px auto; padding: 0 16px; }}
+  .card {{ background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 20px; margin-bottom: 20px; }}
+  .card h2 {{ font-size: 15px; color: #1f2329; margin-bottom: 12px; }}
+  .chart {{ width: 100%; height: 420px; }}
+  .chart-sm {{ width: 100%; height: 300px; }}
+  select {{ padding: 6px 12px; border: 1px solid #d9dde3; border-radius: 6px; font-size: 13px; background: #fff; }}
+  .legend-hint {{ font-size: 12px; color: #86909c; margin-top: 6px; }}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>📊 自选池轮动分析报告</h1>
+  <div class="sub">策略: 强弱评分 + 单持仓满仓 + 卖弱买强 &nbsp;|&nbsp; 生成时间: 2026-08-02</div>
+  <div class="stats">
+    <div class="stat"><div class="v" style="color:#4cd964;">{payload['stats'].get('total_return', 0):+.1f}%</div><div class="l">总收益率</div></div>
+    <div class="stat"><div class="v">{payload['stats'].get('annual_return', 0):+.1f}%</div><div class="l">年化收益</div></div>
+    <div class="stat"><div class="v">{payload['stats'].get('sharpe', 0):.2f}</div><div class="l">Sharpe</div></div>
+    <div class="stat"><div class="v" style="color:#ff5b5b;">{payload['stats'].get('max_drawdown', 0):.1f}%</div><div class="l">最大回撤</div></div>
+    <div class="stat"><div class="v">{payload['stats'].get('total_trades', 0)}</div><div class="l">交易次数</div></div>
+    <div class="stat"><div class="v">{payload['stats'].get('win_rate', 0):.1f}%</div><div class="l">胜率</div></div>
+    <div class="stat"><div class="v">{payload['stats'].get('profit_loss_ratio', 0):.2f}</div><div class="l">盈亏比</div></div>
+  </div>
+</div>
+<div class="container">
+  <div class="card"><h2>📈 净值对比: 组合轮动 vs 每只个股独立满仓</h2>
+    <div id="navChart" class="chart"></div>
+    <div class="legend-hint">💡 点击图例可显隐曲线, 底部拖拽可缩放时间段</div>
+  </div>
+  <div class="card"><h2>🏆 总收益对比</h2>
+    <div id="barChart" class="chart-sm"></div>
+  </div>
+  <div class="card"><h2>🕯️ 个股K线 (含买卖点)</h2>
+    <select id="stockSel" style="margin-bottom:12px;"></select>
+    <div id="klineChart" class="chart"></div>
+    <div class="legend-hint">🟢 三角=买入 &nbsp;🔻 倒三角=卖出 &nbsp;虚线=BOLL下轨</div>
+  </div>
+</div>
+<script>
+const DATA = {json.dumps(payload, ensure_ascii=False)};
+
+// ---- 主题 ----
+const COLOR = {{ up: '#e8403a', down: '#1ba27a', grid: '#eef1f4', text: '#4e5969' }};
+
+// ---- 1. 净值对比 ----
+(function () {{
+  const chart = echarts.init(document.getElementById('navChart'));
+  const series = DATA.nav_series.map(s => ({{
+    name: s.name, type: 'line', showSymbol: false, smooth: true,
+    lineStyle: {{ width: s.bold ? 3.5 : 1.5, color: s.bold ? '#e8403a' : undefined }},
+    data: s.nav, emphasis: {{ focus: 'series' }},
+  }}));
+  chart.setOption({{
+    tooltip: {{ trigger: 'axis', backgroundColor: '#fff', borderColor: '#e5e8ec',
+                textStyle: {{ color: '#1f2329' }} }},
+    legend: {{ top: 0, textStyle: {{ color: COLOR.text }} }},
+    grid: {{ left: 50, right: 20, top: 40, bottom: 60 }},
+    xAxis: {{ type: 'category', data: DATA.nav_series[0].dates,
+             axisLine: {{ lineStyle: {{ color: '#d9dde3' }} }},
+             axisLabel: {{ color: COLOR.text }} }},
+    yAxis: {{ type: 'value', scale: true, splitLine: {{ lineStyle: {{ color: COLOR.grid }} }},
+             axisLabel: {{ color: COLOR.text, formatter: v => v.toFixed(2) }} }},
+    dataZoom: [{{ type: 'inside' }}, {{ type: 'slider', height: 16, bottom: 10 }}],
+    series,
+  }});
+  window.addEventListener('resize', () => chart.resize());
+}})();
+
+// ---- 2. 收益柱状 ----
+(function () {{
+  const chart = echarts.init(document.getElementById('barChart'));
+  chart.setOption({{
+    tooltip: {{ trigger: 'axis', axisPointer: {{ type: 'shadow' }}, backgroundColor: '#fff', borderColor: '#e5e8ec', textStyle: {{ color: '#1f2329' }} }},
+    grid: {{ left: 60, right: 20, top: 20, bottom: 30 }},
+    xAxis: {{ type: 'category', data: DATA.bar_data.map(d => d.name),
+             axisLabel: {{ color: COLOR.text, rotate: 15 }} }},
+    yAxis: {{ type: 'value', axisLabel: {{ color: COLOR.text, formatter: v => v + '%' }},
+             splitLine: {{ lineStyle: {{ color: COLOR.grid }} }} }},
+    series: [{{ type: 'bar', data: DATA.bar_data.map((d, i) => ({{
+      value: d.value,
+      itemStyle: {{ color: d.value >= 0 ? '#2c6fbb' : '#e8403a',
+                    borderRadius: [4, 4, 0, 0] }},
+    }})), barMaxWidth: 60,
+      label: {{ show: true, position: 'top', formatter: p => p.value + '%', color: COLOR.text }} }}],
+  }});
+  window.addEventListener('resize', () => chart.resize());
+}})();
+
+// ---- 3. K线 ----
+(function () {{
+  const chart = echarts.init(document.getElementById('klineChart'));
+  const sel = document.getElementById('stockSel');
+  DATA.kline_data.forEach((k, i) => {{
+    const opt = document.createElement('option');
+    opt.value = i; opt.textContent = k.code + ' ' + k.name;
+    sel.appendChild(opt);
+  }});
+
+  function render(idx) {{
+    const k = DATA.kline_data[idx];
+    const dates = k.ohlc.map(o => o[0]);
+    const series = [
+      {{ name: 'K线', type: 'candlestick', data: k.ohlc.map(o => [o[1], o[2], o[3], o[4]]),
+         itemStyle: {{ color: COLOR.up, color0: COLOR.down, borderColor: COLOR.up, borderColor0: COLOR.down }} }},
+      {{ name: 'MA5', type: 'line', showSymbol: false, smooth: true, data: k.ma5,
+         lineStyle: {{ width: 1.2, color: '#f5a623' }} }},
+      {{ name: 'MA20', type: 'line', showSymbol: false, smooth: true, data: k.ma20,
+         lineStyle: {{ width: 1.2, color: '#2c6fbb' }} }},
+      {{ name: 'BOLL下轨', type: 'line', showSymbol: false, data: k.boll,
+         lineStyle: {{ width: 1, color: '#86909c', type: 'dashed' }} }},
+      {{ name: '买入', type: 'scatter', data: k.buys.map(b => [b.date, b.price]),
+         symbol: 'triangle', symbolSize: 12, itemStyle: {{ color: '#1ba27a' }} }},
+      {{ name: '卖出', type: 'scatter', data: k.sells.map(s => [s.date, s.price]),
+         symbol: 'triangle', symbolRotate: 180, symbolSize: 12, itemStyle: {{ color: '#e8403a' }} }},
+    ];
+    chart.setOption({{
+      tooltip: {{ trigger: 'axis', axisPointer: {{ type: 'cross' }}, backgroundColor: '#fff',
+                  borderColor: '#e5e8ec', textStyle: {{ color: '#1f2329' }} }},
+      legend: {{ top: 0, textStyle: {{ color: COLOR.text }} }},
+      grid: {{ left: 60, right: 20, top: 40, bottom: 60 }},
+      xAxis: {{ type: 'category', data: dates, boundaryGap: true,
+               axisLine: {{ lineStyle: {{ color: '#d9dde3' }} }}, axisLabel: {{ color: COLOR.text }} }},
+      yAxis: {{ type: 'value', scale: true, splitLine: {{ lineStyle: {{ color: COLOR.grid }} }},
+               axisLabel: {{ color: COLOR.text }} }},
+      dataZoom: [{{ type: 'inside' }}, {{ type: 'slider', height: 16, bottom: 10 }}],
+      series,
+    }}, true);
+  }}
+  sel.addEventListener('change', e => render(Number(e.target.value)));
+  if (DATA.kline_data.length) render(0);
+  window.addEventListener('resize', () => chart.resize());
+}})();
+</script>
+</body>
+</html>"""
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+    return output_path

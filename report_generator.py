@@ -146,7 +146,6 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     """生成交互式HTML报告（含plotly图表）"""
     # 处理scored_df为None的情况 (个股回测模式)
     if scored_df is None:
-        import pandas as pd
         scored_df = pd.DataFrame()
 
     top = scored_df.head(top_n) if len(scored_df) > 0 else pd.DataFrame()

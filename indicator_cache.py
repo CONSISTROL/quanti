@@ -303,6 +303,15 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             hist_up_arr[i] = macd_hist_vals[i] > macd_hist_vals[i - 1]
             hist_dn_arr[i] = macd_hist_vals[i] < macd_hist_vals[i - 1]
 
+    # SKDJ D-K差值趋势 (D-K缩小 = K向D靠拢 = SKDJ走强中)
+    dk_diff_arr = np.full(n, np.nan)
+    dk_shrink_arr = np.zeros(n, dtype=bool)
+    for i in range(n):
+        dk_diff_arr[i] = d_vals[i] - k_vals[i]
+    for i in range(1, n):
+        if not np.isnan(dk_diff_arr[i]) and not np.isnan(dk_diff_arr[i - 1]):
+            dk_shrink_arr[i] = dk_diff_arr[i] < dk_diff_arr[i - 1]
+
     k_up_win_arr = _any_win(k_up_arr, 5)                                        # b_kdj_win=5
     max_k_5d_arr = _roll_max_arr(k_vals, 5)                                     # s_kdj_win=5
     k_dn_win_arr = _any_win(k_dn_arr, 3)                                        # 近3天K有下降
@@ -393,6 +402,7 @@ def _incremental_indicators(closes, volumes, highs, lows, dates_arr, target_date
             'wk_boll_low': float(wk_boll_low[idx]) if not np.isnan(wk_boll_low[idx]) else 0,
             'boll_low': float(boll_low_arr[idx]) if not np.isnan(boll_low_arr[idx]) else 0,
             'prev_close': float(closes[idx - 1]) if idx > 0 else 0,
+            'skdj_dk_shrink': bool(dk_shrink_arr[idx]),   # 日线SKDJ D-K较前日缩小 (走强中)
             'k_up_win': bool(k_up_win_arr[idx]),
             'max_k_5d': float(max_k_5d_arr[idx]),
             'k_dn_win': bool(k_dn_win_arr[idx]),

@@ -221,7 +221,17 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     candidate_codes = []
     candidate_set = set()
 
-    if strategy in ('reversal', 'bollinger'):
+    watchlist = config.get('watchlist', [])
+    if strategy == 'watchlist' and watchlist:
+        # 自选轮动: 只扫描自选池 (可含ETF/LOF)
+        candidate_codes = []
+        for c in watchlist:
+            cc = str(c).zfill(6)
+            if cc in pure_to_sina:
+                candidate_codes.append(cc)
+        candidate_set = set(candidate_codes)
+        print(f"  自选轮动: {len(candidate_codes)} 只 (config watchlist)")
+    elif strategy in ('reversal', 'bollinger'):
         # 全市场扫描策略: 超跌/破轨机会 anywhere
         candidate_codes = list(pure_to_sina.keys())
         candidate_set = set(candidate_codes)
@@ -468,8 +478,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             today_str = today.strftime('%Y-%m-%d')
 
             for code, sina in pure_to_sina.items():
-                if code in held_codes or code in candidate_set:
-                    continue
+                if code in held_codes or code in candidate_set or strategy == 'watchlist':
+                    continue  # 自选轮动模式: 只做自选池, 不动态发现
 
                 # 使用预计算数据 (快)
                 if precomputed and code in precomputed:
