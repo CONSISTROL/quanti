@@ -17,7 +17,6 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 
-import plotly.graph_objects as go
 
 
 # ============================================================
@@ -930,181 +929,135 @@ def ai_analyze_strategy(comparison_results, api_key=None, holding_periods=None):
 # ============================================================
 
 def _generate_swing_charts(result):
-    """生成波段回测图表 (dict结构 from run_swing_backtest)"""
+    """生成波段回测图表 (dict结构 from run_swing_backtest) — ECharts"""
+    from report_echarts import echarts_script, UP, DOWN, GRID, TEXT, BLUE, GRAY
     charts = []
-    colors = {
-        'strategy': '#3498db',
-        'benchmark': '#95a5a6',
-    }
 
     equity_curve = result.get('equity_curve', [])
     if len(equity_curve) >= 2:
-        dates = [e[0] for e in equity_curve]
+        dates = [pd.Timestamp(e[0]).strftime('%Y-%m-%d') for e in equity_curve]
         values = [e[1] for e in equity_curve]
         initial = result.get('initial_capital', values[0])
         nav = [v / initial for v in values]
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=dates, y=nav, mode='lines',
-            name='策略净值',
-            line=dict(color=colors['strategy'], width=2.5),
-            hovertemplate='日期: %{x|%Y-%m-%d}<br>净值: %{y:.4f}<extra></extra>',
-        ))
-
-        # 买卖标记
+        buy_pts, sell_pts = [], []
         trades = result.get('trades', [])
-        buy_trades = [t for t in trades if t.direction == 'BUY']
-        sell_trades = [t for t in trades if t.direction == 'SELL']
-        for t in buy_trades:
-            if t.date in dates:
-                idx = dates.index(t.date)
-                fig.add_trace(go.Scatter(
-                    x=[t.date], y=[nav[idx]], mode='markers',
-                    marker=dict(symbol='triangle-up', size=10, color='#10b981',
-                                line=dict(width=1, color='white')),
-                    name='买入' if t is buy_trades[0] else None,
-                    showlegend=(t is buy_trades[0]),
-                    hovertemplate=f'<b>🟢 买入</b><br>{t.code} {t.name}<br>'
-                                  f'价格: ¥{t.price:.2f}<br>信号: {t.reason}<extra></extra>',
-                ))
-        for t in sell_trades:
-            if t.date in dates:
-                idx = dates.index(t.date)
-                fig.add_trace(go.Scatter(
-                    x=[t.date], y=[nav[idx]], mode='markers',
-                    marker=dict(symbol='triangle-down', size=10, color='#ef4444',
-                                line=dict(width=1, color='white')),
-                    name='卖出' if t is sell_trades[0] else None,
-                    showlegend=(t is sell_trades[0]),
-                    hovertemplate=f'<b>🔴 卖出</b><br>{t.code} {t.name}<br>'
-                                  f'价格: ¥{t.price:.2f}<br>盈亏: {t.pnl_pct:+.1%}<extra></extra>',
-                ))
+        for t in trades:
+            d = pd.Timestamp(t.date).strftime('%Y-%m-%d')
+            if d in dates:
+                idx = dates.index(d)
+                if t.direction == 'BUY':
+                    buy_pts.append({'value': [d, round(nav[idx], 4)], 'code': t.code, 'price': t.price, 'reason': t.reason})
+                else:
+                    sell_pts.append({'value': [d, round(nav[idx], 4)], 'code': t.code, 'price': t.price, 'pnl': round(t.pnl_pct * 100, 1)})
 
-        fig.update_layout(
-            title='策略累计净值 (含买卖点)',
-            xaxis=dict(title='日期', gridcolor='#f0f0f0'),
-            yaxis=dict(title='净值', gridcolor='#f0f0f0'),
-            height=340, margin=dict(t=40, b=30, l=50, r=20),
-            legend=dict(orientation='h', y=1.12, x=0.5, xanchor='center'),
-            font=dict(size=12),
-        )
-        charts.append(('累计净值', fig.to_html(full_html=False, include_plotlyjs=False)))
+        option = {
+            'tooltip': {'trigger': 'axis', 'backgroundColor': '#fff', 'borderColor': '#e5e8ec',
+                        'textStyle': {'color': '#1f2329'}},
+            'legend': {'top': 0, 'textStyle': {'color': TEXT}},
+            'grid': {'left': 55, 'right': 20, 'top': 36, 'bottom': 60},
+            'xAxis': {'type': 'category', 'data': dates, 'boundaryGap': False,
+                      'axisLine': {'lineStyle': {'color': '#d9dde3'}}, 'axisLabel': {'color': TEXT}},
+            'yAxis': {'type': 'value', 'scale': True, 'splitLine': {'lineStyle': {'color': GRID}},
+                      'axisLabel': {'color': TEXT}},
+            'dataZoom': [{'type': 'inside'}, {'type': 'slider', 'height': 16, 'bottom': 10}],
+            'series': [
+                {'name': '策略净值', 'type': 'line', 'data': nav, 'showSymbol': False, 'smooth': True,
+                 'lineStyle': {'color': BLUE, 'width': 2.5},
+                 'areaStyle': {'color': 'rgba(44,111,187,0.08)'}},
+                {'name': '买入', 'type': 'scatter', 'data': buy_pts, 'symbol': 'triangle', 'symbolSize': 10,
+                 'itemStyle': {'color': DOWN}},
+                {'name': '卖出', 'type': 'scatter', 'data': sell_pts, 'symbol': 'triangle', 'symbolRotate': 180,
+                 'symbolSize': 10, 'itemStyle': {'color': UP}},
+            ],
+        }
+        charts.append(('累计净值', echarts_script('bt_nav', option, 340)))
 
     # 交易盈亏分布
     trades = result.get('trades', [])
     sell_trades = [t for t in trades if t.direction == 'SELL']
     if sell_trades:
-        pnls = [t.pnl_pct * 100 for t in sell_trades]
-        fig = go.Figure()
-        fig.add_trace(go.Histogram(
-            x=pnls, nbinsx=15,
-            marker=dict(color='rgba(52,152,219,0.5)', line=dict(color='#2980b9', width=1)),
-            name='交易盈亏',
-        ))
-        fig.add_vline(x=0, line_dash='dash', line_color='#e74c3c', line_width=1.5,
-                      annotation_text='盈亏平衡', annotation_position='top right')
-
+        pnls = [round(t.pnl_pct * 100, 1) for t in sell_trades]
+        option = {
+            'tooltip': {'trigger': 'axis', 'backgroundColor': '#fff', 'borderColor': '#e5e8ec',
+                        'textStyle': {'color': '#1f2329'}},
+            'grid': {'left': 55, 'right': 20, 'top': 30, 'bottom': 40},
+            'xAxis': {'type': 'category', 'data': list(range(len(pnls))),
+                      'axisLine': {'lineStyle': {'color': '#d9dde3'}}, 'axisLabel': {'color': TEXT, 'show': False}},
+            'yAxis': {'type': 'value', 'splitLine': {'lineStyle': {'color': GRID}},
+                      'axisLabel': {'color': TEXT, 'formatter': 'function(v){return v + "%";}'}},
+            'series': [{
+                'type': 'bar', 'data': pnls, 'barWidth': '60%',
+                'itemStyle': {'color': 'function(p){return p.value >= 0 ? "#e8403a" : "#1ba27a";}'},
+            }],
+        }
         stats = result.get('stats', {})
-        fig.update_layout(
-            title=f"交易盈亏分布 (共{len(sell_trades)}笔, 胜率{stats.get('win_rate', 0):.0%})",
-            xaxis=dict(title='单笔收益率 (%)', gridcolor='#f0f0f0'),
-            yaxis=dict(title='笔数', gridcolor='#f0f0f0'),
-            height=300, margin=dict(t=40, b=30, l=50, r=20),
-            font=dict(size=12),
-        )
-        charts.append(('盈亏分布', fig.to_html(full_html=False, include_plotlyjs=False)))
+        charts.append((f'盈亏分布 (共{len(sell_trades)}笔, 胜率{stats.get("win_rate", 0):.0%})',
+                       echarts_script('bt_pnl', option, 300)))
 
     return charts
 
-
 def generate_backtest_charts(result):
-    """生成回测图表（Plotly HTML片段列表）"""
+    """生成回测图表（ECharts HTML片段列表）"""
     # 处理dict结构 (from run_swing_backtest / backtest_single_stock)
     if isinstance(result, dict):
         return _generate_swing_charts(result)
 
+    from report_echarts import echarts_script, UP, DOWN, GRID, TEXT, BLUE, GRAY
     charts = []
-    colors = {
-        'strategy': '#3498db',
-        'benchmark': '#95a5a6',
-    }
+    colors = {'strategy': BLUE, 'benchmark': GRAY}
 
     for hp, ps in sorted(result.periods.items()):
         bench = result.benchmark_periods.get(hp)
         if not ps.cumulative_nav or len(ps.cumulative_nav) < 2:
             continue
-
-        fig = go.Figure()
-
-        dates = list(range(len(ps.cumulative_nav)))
-        fig.add_trace(go.Scatter(
-            x=dates, y=ps.cumulative_nav,
-            mode='lines+markers',
-            name=f'{result.strategy_name}策略',
-            line=dict(color=colors['strategy'], width=2),
-            marker=dict(size=5),
-        ))
-
+        option = {
+            'tooltip': {'trigger': 'axis', 'backgroundColor': '#fff', 'borderColor': '#e5e8ec',
+                        'textStyle': {'color': '#1f2329'}},
+            'legend': {'top': 0, 'textStyle': {'color': TEXT}},
+            'grid': {'left': 55, 'right': 20, 'top': 36, 'bottom': 40},
+            'xAxis': {'type': 'category', 'data': list(range(len(ps.cumulative_nav))),
+                      'axisLine': {'lineStyle': {'color': '#d9dde3'}}, 'axisLabel': {'color': TEXT}},
+            'yAxis': {'type': 'value', 'scale': True, 'splitLine': {'lineStyle': {'color': GRID}},
+                      'axisLabel': {'color': TEXT}},
+            'series': [
+                {'name': f'{result.strategy_name}策略', 'type': 'line', 'data': ps.cumulative_nav,
+                 'showSymbol': False, 'lineStyle': {'color': colors['strategy'], 'width': 2}},
+            ],
+        }
         if bench and bench.cumulative_nav:
-            fig.add_trace(go.Scatter(
-                x=list(range(len(bench.cumulative_nav))),
-                y=bench.cumulative_nav,
-                mode='lines',
-                name='基准 (全市场等权)',
-                line=dict(color=colors['benchmark'], width=2, dash='dash'),
-            ))
-
-        fig.update_layout(
-            title=f'{STRATEGIES.get(result.strategy_name, {}).get("label", result.strategy_name)} '
-                  f'— 持有 {hp} 日 累计净值',
-            xaxis=dict(title='再平衡周期', gridcolor='#f0f0f0'),
-            yaxis=dict(title='净值', gridcolor='#f0f0f0'),
-            height=320, margin=dict(t=40, b=30, l=50, r=20),
-            legend=dict(orientation='h', y=1.12, x=0.5, xanchor='center'),
-            font=dict(size=12),
-        )
-
-        html = fig.to_html(full_html=False, include_plotlyjs=False)
-        charts.append((f'累计净值 ({hp}日)', html))
+            option['series'].append({'name': '基准 (全市场等权)', 'type': 'line',
+                                     'data': bench.cumulative_nav, 'showSymbol': False,
+                                     'lineStyle': {'color': colors['benchmark'], 'width': 2, 'type': 'dashed'}})
+        charts.append((f'累计净值 ({hp}日)', echarts_script(f'btnav_{hp}', option, 320)))
 
     # 胜率对比
     periods = sorted(result.periods.keys())
     if periods:
-        fig = go.Figure()
-        strategy_wr = [result.periods[hp].win_rate * 100 for hp in periods]
-        benchmark_wr = [result.benchmark_periods[hp].win_rate * 100
-                        if hp in result.benchmark_periods else 0
-                        for hp in periods]
-
-        fig.add_trace(go.Bar(
-            x=[f'{hp}日' for hp in periods], y=strategy_wr,
-            name='策略胜率', marker=dict(color=colors['strategy']),
-            text=[f'{v:.1f}%' for v in strategy_wr], textposition='outside',
-        ))
-        fig.add_trace(go.Bar(
-            x=[f'{hp}日' for hp in periods], y=benchmark_wr,
-            name='基准胜率', marker=dict(color=colors['benchmark']),
-            text=[f'{v:.1f}%' for v in benchmark_wr], textposition='outside',
-        ))
-
-        fig.update_layout(
-            title='各周期胜率对比', barmode='group',
-            yaxis=dict(title='胜率 (%)', gridcolor='#f0f0f0', range=[0, 100]),
-            height=300, margin=dict(t=40, b=30, l=50, r=20),
-            legend=dict(orientation='h', y=1.12, x=0.5, xanchor='center'),
-            font=dict(size=12),
-        )
-        html = fig.to_html(full_html=False, include_plotlyjs=False)
-        charts.append(('胜率对比', html))
+        strategy_wr = [round(result.periods[hp].win_rate * 100, 1) for hp in periods]
+        benchmark_wr = [round(result.benchmark_periods[hp].win_rate * 100, 1)
+                        if hp in result.benchmark_periods else 0 for hp in periods]
+        option = {
+            'tooltip': {'trigger': 'axis', 'backgroundColor': '#fff', 'borderColor': '#e5e8ec',
+                        'textStyle': {'color': '#1f2329'}},
+            'legend': {'top': 0, 'textStyle': {'color': TEXT}},
+            'grid': {'left': 55, 'right': 20, 'top': 36, 'bottom': 40},
+            'xAxis': {'type': 'category', 'data': [f'{hp}日' for hp in periods],
+                      'axisLine': {'lineStyle': {'color': '#d9dde3'}}, 'axisLabel': {'color': TEXT}},
+            'yAxis': {'type': 'value', 'min': 0, 'max': 100, 'splitLine': {'lineStyle': {'color': GRID}},
+                      'axisLabel': {'color': TEXT, 'formatter': 'function(v){return v + "%";}'}},
+            'series': [
+                {'name': '策略胜率', 'type': 'bar', 'data': strategy_wr,
+                 'itemStyle': {'color': colors['strategy'], 'borderRadius': [4, 4, 0, 0]},
+                 'label': {'show': True, 'position': 'top', 'color': TEXT,
+                           'formatter': 'function(p){return p.value + "%";}'}},
+                {'name': '基准胜率', 'type': 'bar', 'data': benchmark_wr,
+                 'itemStyle': {'color': colors['benchmark'], 'borderRadius': [4, 4, 0, 0]}},
+            ],
+        }
+        charts.append(('胜率对比', echarts_script('bt_win', option, 300)))
 
     return charts
-
-
-# ============================================================
-# 终端输出
-# ============================================================
-
 def print_backtest_summary(result):
     """在终端打印回测摘要"""
     strategy_label = STRATEGIES.get(result.strategy_name, {}).get('label', result.strategy_name)

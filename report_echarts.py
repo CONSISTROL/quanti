@@ -9,6 +9,57 @@ import pandas as pd
 
 ECHARTS_CDN = 'https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js'
 
+# 统一配色 (金融风格)
+UP = '#e8403a'      # 涨 (A股红)
+DOWN = '#1ba27a'    # 跌 (A股绿)
+GRID = '#eef1f4'
+TEXT = '#4e5969'
+BLUE = '#2c6fbb'
+ORANGE = '#f5a623'
+GRAY = '#86909c'
+
+
+def echarts_script(chart_id, option, height=300):
+    """通用ECharts图表HTML片段: div + init脚本 (需在ECharts CDN加载后使用)"""
+    return f'''<div id="{chart_id}" style="width:100%;height:{height}px;"></div>
+<script>
+(function() {{
+  var c = echarts.init(document.getElementById('{chart_id}'));
+  c.setOption({json.dumps(option, ensure_ascii=False)});
+  window.addEventListener('resize', function() {{ c.resize(); }});
+}})();
+</script>'''
+
+
+def base_tooltip(trigger='axis'):
+    """统一tooltip样式"""
+    return {'trigger': trigger, 'backgroundColor': '#fff', 'borderColor': '#e5e8ec',
+            'textStyle': {'color': '#1f2329'}}
+
+
+def base_grid(top=40, left=50, right=20, bottom=30):
+    return {'left': left, 'right': right, 'top': top, 'bottom': bottom}
+
+
+def base_xaxis(data=None, rotate=0):
+    ax = {'type': 'category' if data else 'value',
+          'axisLine': {'lineStyle': {'color': '#d9dde3'}},
+          'axisLabel': {'color': TEXT}}
+    if data is not None:
+        ax['data'] = data
+    if rotate:
+        ax['axisLabel']['rotate'] = rotate
+    return ax
+
+
+def base_yaxis(scale=True, formatter=None):
+    ax = {'type': 'value', 'scale': scale,
+          'splitLine': {'lineStyle': {'color': GRID}},
+          'axisLabel': {'color': TEXT}}
+    if formatter:
+        ax['axisLabel']['formatter'] = formatter
+    return ax
+
 
 def _eq_series(eq, initial):
     """equity_curve → (dates, nav) JS友好数据"""

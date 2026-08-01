@@ -8,10 +8,8 @@ from datetime import datetime
 
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
 from factor_model import FACTOR_GROUPS
+from report_echarts import echarts_script, UP, DOWN, GRID, TEXT, BLUE, ORANGE, GRAY
 
 
 def _display_width(s):
@@ -143,7 +141,7 @@ def print_terminal_report(scored_df, top_n, weights, spot_filtered=None,
 def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=None,
                          backtest_result=None, backtest_date=None, fwd_summary=None,
                          stock_details=None, trade_result=None):
-    """生成交互式HTML报告（含plotly图表）"""
+    """生成交互式HTML报告（ECharts图表）"""
     # 处理scored_df为None的情况 (个股回测模式)
     if scored_df is None:
         scored_df = pd.DataFrame()
@@ -577,7 +575,7 @@ def _html_head(backtest_date=None):
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{title_str}</title>
-<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   body {{
@@ -675,7 +673,9 @@ def _add_card(parts, label, value, unit):
 # ============================================================
 
 def _plot_radar(top_df, colors):
-    """TOP N 平均因子雷达图"""
+    """TOP N 平均因子雷达图 (ECharts)"""
+    if 'composite_score' not in top_df.columns or not any(f'{g}_score' in top_df.columns for g in FACTOR_GROUPS):
+        return '<p style="color:#999;text-align:center;padding:40px;">无因子数据</p>'
     top10 = top_df.head(10)
     categories = list(FACTOR_GROUPS.values())
     r_values = []
@@ -684,28 +684,32 @@ def _plot_radar(top_df, colors):
         val = top10[col].mean() if col in top10.columns else 0
         r_values.append(round(val, 3) if pd.notna(val) else 0)
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatterpolar(
-        r=r_values + [r_values[0]],
-        theta=[c['label'] for c in categories] + [categories[0]['label']],
-        fill='toself',
-        fillcolor='rgba(52,152,219,0.15)',
-        line=dict(color='#3498db', width=2),
-        marker=dict(size=7, color='#3498db'),
-    ))
-    fig.update_layout(
-        polar=dict(
-            radialaxis=dict(visible=True, gridcolor='#e0e0e0'),
-            angularaxis=dict(gridcolor='#e0e0e0'),
-        ),
-        showlegend=False, height=350, margin=dict(t=20, b=30, l=60, r=60),
-        font=dict(size=12),
-    )
-    return fig.to_html(full_html=False, include_plotlyjs=False)
+    option = {
+        'tooltip': {'trigger': 'item', 'backgroundColor': '#fff', 'borderColor': '#e5e8ec',
+                    'textStyle': {'color': '#1f2329'}},
+        'radar': {
+            'indicator': [{'name': c['label'], 'max': 1.0} for c in categories],
+            'splitLine': {'lineStyle': {'color': GRID}},
+            'axisLine': {'lineStyle': {'color': '#d9dde3'}},
+            'axisLabel': {'color': TEXT},
+        },
+        'series': [{
+            'type': 'radar',
+            'data': [{
+                'value': r_values,
+                'name': 'TOP10 平均因子',
+                'areaStyle': {'color': 'rgba(44,111,187,0.15)'},
+                'lineStyle': {'color': BLUE, 'width': 2},
+                'itemStyle': {'color': BLUE},
+                'symbolSize': 6,
+            }],
+        }],
+    }
+    return echarts_script('radar_chart', option, 350)
 
 
 def _plot_sector(top_df):
-    """行业分布图"""
+    """行业分布图 (ECharts横向条形)"""
     if 'sector' not in top_df.columns:
         return '<p style="color:#999;text-align:center;padding:40px;">无行业数据</p>'
 
@@ -717,90 +721,84 @@ def _plot_sector(top_df):
     if sector_counts.empty:
         return '<p style="color:#999;text-align:center;padding:40px;">无有效行业分类</p>'
 
-    fig = go.Figure(go.Bar(
-        x=sector_counts.values,
-        y=sector_counts.index,
-        orientation='h',
-        marker=dict(
-            color=sector_counts.values,
-            colorscale='Blues',
-            showscale=False,
-        ),
-        text=sector_counts.values,
-        textposition='outside',
-    ))
-    fig.update_layout(
-        height=350, margin=dict(t=10, b=30, l=100, r=40),
-        xaxis=dict(title='股票数量', gridcolor='#f0f0f0'),
-        yaxis=dict(autorange='reversed'),
-        font=dict(size=12),
-    )
-    return fig.to_html(full_html=False, include_plotlyjs=False)
+    option = {
+        'tooltip': {'trigger': 'axis', 'axisPointer': {'type': 'shadow'},
+                    'backgroundColor': '#fff', 'borderColor': '#e5e8ec',
+                    'textStyle': {'color': '#1f2329'}},
+        'grid': {'left': 110, 'right': 40, 'top': 20, 'bottom': 30},
+        'xAxis': {'type': 'value', 'splitLine': {'lineStyle': {'color': GRID}},
+                  'axisLabel': {'color': TEXT}},
+        'yAxis': {'type': 'category', 'data': sector_counts.index.tolist(),
+                  'axisLabel': {'color': TEXT, 'fontSize': 12}},
+        'series': [{
+            'type': 'bar', 'data': sector_counts.values.tolist(),
+            'barMaxWidth': 20,
+            'itemStyle': {'color': BLUE, 'borderRadius': [0, 4, 4, 0]},
+            'label': {'show': True, 'position': 'right', 'color': TEXT, 'fontSize': 12},
+        }],
+    }
+    return echarts_script('sector_chart', option, 350)
 
 
 def _plot_score_distribution(scored_df, top_df):
-    """综合得分分布直方图"""
+    """综合得分分布直方图 (ECharts)"""
+    if 'composite_score' not in scored_df.columns:
+        return '<p style="color:#999;text-align:center;padding:40px;">无打分数据</p>'
     scores = scored_df['composite_score'].dropna()
     top_scores = top_df['composite_score'].dropna()
 
-    fig = go.Figure()
-    fig.add_trace(go.Histogram(
-        x=scores, nbinsx=50, name='全部股票',
-        marker=dict(color='rgba(52,152,219,0.35)'),
-    ))
-    fig.add_trace(go.Histogram(
-        x=top_scores, nbinsx=20, name='TOP 入选',
-        marker=dict(color='rgba(231,76,60,0.7)'),
-    ))
-    fig.update_layout(
-        barmode='overlay', height=350,
-        margin=dict(t=20, b=40, l=50, r=20),
-        xaxis=dict(title='综合得分', gridcolor='#f0f0f0'),
-        yaxis=dict(title='股票数量', gridcolor='#f0f0f0'),
-        legend=dict(orientation='h', y=1.12, x=0.5, xanchor='center'),
-        font=dict(size=12),
-    )
-    return fig.to_html(full_html=False, include_plotlyjs=False)
+    bins = list(np.arange(0, 1.6, 0.03))
+    hist_all, edges = np.histogram(scores, bins=bins)
+    hist_top, _ = np.histogram(top_scores, bins=bins)
+    labels = [f'{edges[i]:.2f}' for i in range(len(edges) - 1)]
+
+    option = {
+        'tooltip': {'trigger': 'axis', 'backgroundColor': '#fff', 'borderColor': '#e5e8ec',
+                    'textStyle': {'color': '#1f2329'}},
+        'legend': {'top': 0, 'textStyle': {'color': TEXT}},
+        'grid': {'left': 50, 'right': 20, 'top': 36, 'bottom': 40},
+        'xAxis': {'type': 'category', 'data': labels, 'axisLabel': {'color': TEXT, 'rotate': 45, 'fontSize': 10}},
+        'yAxis': {'type': 'value', 'splitLine': {'lineStyle': {'color': GRID}},
+                  'axisLabel': {'color': TEXT}},
+        'series': [
+            {'name': '全部股票', 'type': 'bar', 'data': hist_all.tolist(),
+             'itemStyle': {'color': 'rgba(44,111,187,0.35)'}, 'barWidth': '98%'},
+            {'name': 'TOP 入选', 'type': 'bar', 'data': hist_top.tolist(),
+             'itemStyle': {'color': 'rgba(232,64,58,0.7)'}, 'barWidth': '98%'},
+        ],
+    }
+    return echarts_script('dist_chart', option, 350)
 
 
 def _plot_factor_scatter(scored_df, top_df, colors):
-    """价值×质量 因子散点图"""
-    fig = go.Figure()
+    """因子空间散点图: 价值 x 质量 (ECharts)"""
+    if 'value_score' not in scored_df.columns or 'quality_score' not in scored_df.columns:
+        return '<p style="color:#999;text-align:center;padding:40px;">无因子数据</p>'
+    x = scored_df['value_score'].dropna()
+    y = scored_df.loc[x.index, 'quality_score']
+    top_codes = set(top_df['code'].astype(str))
 
-    # 全部股票 (灰色背景)
-    if 'value_score' in scored_df.columns and 'quality_score' in scored_df.columns:
-        fig.add_trace(go.Scatter(
-            x=scored_df['value_score'], y=scored_df['quality_score'],
-            mode='markers',
-            marker=dict(size=4, color='rgba(200,200,200,0.4)'),
-            name='全部', showlegend=True,
-        ))
-        # TOP 股票 (高亮)
-        fig.add_trace(go.Scatter(
-            x=top_df['value_score'], y=top_df['quality_score'],
-            mode='markers+text',
-            text=top_df['name'], textposition='top center',
-            marker=dict(size=9, color=colors.get('value', '#3498db'),
-                        line=dict(width=1, color='white')),
-            name='TOP 入选',
-        ))
-        # 添加象限参考线
-        fig.add_hline(y=0, line_dash='dash', line_color='#ddd', line_width=1)
-        fig.add_vline(x=0, line_dash='dash', line_color='#ddd', line_width=1)
+    all_pts = [{'v': round(vx, 3), 'q': round(vy, 3), 'code': str(c)}
+               for c, vx, vy in zip(x.index, x, y) if pd.notna(vy)]
+    opt = {
+        'tooltip': {'trigger': 'item', 'backgroundColor': '#fff', 'borderColor': '#e5e8ec',
+                    'textStyle': {'color': '#1f2329'},
+                    'formatter': "function(p){var d=p.data;return d.code+'<br/>价值: '+d.v+'<br/>质量: '+d.q;}"},
+        'legend': {'top': 0, 'textStyle': {'color': TEXT}},
+        'grid': {'left': 50, 'right': 20, 'top': 36, 'bottom': 40},
+        'xAxis': {'type': 'value', 'name': '价值分', 'splitLine': {'lineStyle': {'color': GRID}},
+                  'axisLabel': {'color': TEXT}},
+        'yAxis': {'type': 'value', 'name': '质量分', 'splitLine': {'lineStyle': {'color': GRID}},
+                  'axisLabel': {'color': TEXT}},
+        'series': [
+            {'name': '全部', 'type': 'scatter', 'data': [[p['v'], p['q']] for p in all_pts if p['code'] not in top_codes],
+             'symbolSize': 7, 'itemStyle': {'color': 'rgba(44,111,187,0.4)'}},
+            {'name': 'TOP 入选', 'type': 'scatter', 'data': [[p['v'], p['q']] for p in all_pts if p['code'] in top_codes],
+             'symbolSize': 11, 'itemStyle': {'color': 'rgba(232,64,58,0.85)'}},
+        ],
+    }
+    return echarts_script('scatter_chart', opt, 350)
 
-    fig.update_layout(
-        height=350, margin=dict(t=20, b=40, l=50, r=20),
-        xaxis=dict(title='价值因子得分', gridcolor='#f0f0f0'),
-        yaxis=dict(title='质量因子得分', gridcolor='#f0f0f0'),
-        legend=dict(orientation='h', y=1.12, x=0.5, xanchor='center'),
-        font=dict(size=12),
-    )
-    return fig.to_html(full_html=False, include_plotlyjs=False)
-
-
-# ============================================================
-# 详细表格
-# ============================================================
 
 def _build_table(top_df):
     """构建可排序的详细表格"""
@@ -896,88 +894,63 @@ def _build_table(top_df):
 # ============================================================
 
 def _plot_asset_type_pie(scored_df, top_df):
-    """资产类型分布饼图"""
-    type_map = {'stock': '股票', 'etf': 'ETF', 'lof': 'LOF'}
-    type_colors = {'stock': '#3498db', 'etf': '#e67e22', 'lof': '#9b59b6'}
+    """资产类型分布饼图 (ECharts)"""
+    if 'asset_type' not in scored_df.columns:
+        return '<p style="color:#999;text-align:center;padding:40px;">无资产类型数据</p>'
 
-    # 全部证券
-    all_counts = scored_df['asset_type'].value_counts()
-    all_labels = [type_map.get(t, t) for t in all_counts.index]
+    type_colors = {'stock': '#2c6fbb', 'etf': '#1ba27a', 'lof': '#f5a623'}
+    labels = {'stock': '股票', 'etf': 'ETF', 'lof': 'LOF'}
 
-    # TOP N
-    top_counts = top_df['asset_type'].value_counts()
-    top_labels = [type_map.get(t, t) for t in top_counts.index]
+    def pie_series(df, name, center):
+        counts = df['asset_type'].value_counts()
+        data = [{'name': labels.get(t, t), 'value': int(v),
+                 'itemStyle': {'color': type_colors.get(t, GRAY)}}
+                for t, v in counts.items()]
+        return {'name': name, 'type': 'pie', 'radius': ['40%', '68%'], 'center': center,
+                'data': data, 'label': {'color': TEXT}}
 
-    fig = make_subplots(rows=1, cols=2, specs=[[{'type': 'pie'}, {'type': 'pie'}]])
+    option = {
+        'tooltip': {'trigger': 'item', 'backgroundColor': '#fff', 'borderColor': '#e5e8ec',
+                    'textStyle': {'color': '#1f2329'}},
+        'legend': {'top': 0, 'textStyle': {'color': TEXT}},
+        'series': [pie_series(scored_df, '全部', ['25%', '55%']),
+                   pie_series(top_df, 'TOP N', ['75%', '55%'])],
+    }
+    return echarts_script('type_pie', option, 300)
 
-    fig.add_trace(go.Pie(
-        labels=all_labels, values=all_counts.values,
-        name='全部', hole=0.4,
-        marker=dict(colors=[type_colors.get(t, '#95a5a6') for t in all_counts.index]),
-    ), row=1, col=1)
-
-    fig.add_trace(go.Pie(
-        labels=top_labels, values=top_counts.values,
-        name='TOP N', hole=0.4,
-        marker=dict(colors=[type_colors.get(t, '#95a5a6') for t in top_counts.index]),
-    ), row=1, col=2)
-
-    fig.update_layout(
-        height=300, margin=dict(t=20, b=20, l=20, r=20),
-        annotations=[
-            dict(text='全部', x=0.22, y=0.5, font_size=14, showarrow=False),
-            dict(text='TOP N', x=0.78, y=0.5, font_size=14, showarrow=False),
-        ],
-        font=dict(size=12),
-    )
-    return fig.to_html(full_html=False, include_plotlyjs=False)
-
-
-# ============================================================
-# 新增图表: 估值分位数分布
-# ============================================================
 
 def _plot_valuation_distribution(scored_df, top_df):
-    """估值分位数分布直方图"""
+    """估值分位数分布直方图 (ECharts)"""
     if 'pe_percentile' not in scored_df.columns:
         return '<p style="color:#999;text-align:center;padding:40px;">无估值数据</p>'
 
     pe_all = scored_df['pe_percentile'].dropna()
     pe_top = top_df['pe_percentile'].dropna()
-
     if pe_all.empty:
         return '<p style="color:#999;text-align:center;padding:40px;">无有效估值分位数据</p>'
 
-    fig = go.Figure()
-    fig.add_trace(go.Histogram(
-        x=pe_all, nbinsx=20, name='全部',
-        marker=dict(color='rgba(52,152,219,0.35)'),
-    ))
-    fig.add_trace(go.Histogram(
-        x=pe_top, nbinsx=10, name='TOP 入选',
-        marker=dict(color='rgba(231,76,60,0.7)'),
-    ))
+    bins = list(range(0, 101, 5))
+    hist_all, _ = np.histogram(pe_all, bins=bins)
+    hist_top, _ = np.histogram(pe_top, bins=bins)
+    labels = [f'{bins[i]}-{bins[i+1]}' for i in range(len(bins) - 1)]
 
-    # 添加区域标注
-    fig.add_vrect(x0=0, x1=30, fillcolor='rgba(39,174,96,0.1)', line_width=0,
-                  annotation_text='低估', annotation_position='top left')
-    fig.add_vrect(x0=70, x1=100, fillcolor='rgba(231,76,60,0.1)', line_width=0,
-                  annotation_text='高估', annotation_position='top right')
+    option = {
+        'tooltip': {'trigger': 'axis', 'backgroundColor': '#fff', 'borderColor': '#e5e8ec',
+                    'textStyle': {'color': '#1f2329'}},
+        'legend': {'top': 0, 'textStyle': {'color': TEXT}},
+        'grid': {'left': 50, 'right': 20, 'top': 36, 'bottom': 40},
+        'xAxis': {'type': 'category', 'data': labels, 'axisLabel': {'color': TEXT, 'rotate': 45, 'fontSize': 10}},
+        'yAxis': {'type': 'value', 'splitLine': {'lineStyle': {'color': GRID}},
+                  'axisLabel': {'color': TEXT}},
+        'series': [
+            {'name': '全部', 'type': 'bar', 'data': hist_all.tolist(),
+             'itemStyle': {'color': 'rgba(44,111,187,0.35)'}},
+            {'name': 'TOP 入选', 'type': 'bar', 'data': hist_top.tolist(),
+             'itemStyle': {'color': 'rgba(232,64,58,0.7)'}},
+        ],
+    }
+    return echarts_script('val_dist_chart', option, 300)
 
-    fig.update_layout(
-        barmode='overlay', height=300,
-        margin=dict(t=20, b=40, l=50, r=20),
-        xaxis=dict(title='PE/PB历史百分位 (0%=最低, 100%=最高)', gridcolor='#f0f0f0'),
-        yaxis=dict(title='数量', gridcolor='#f0f0f0'),
-        legend=dict(orientation='h', y=1.12, x=0.5, xanchor='center'),
-        font=dict(size=12),
-    )
-    return fig.to_html(full_html=False, include_plotlyjs=False)
-
-
-# ============================================================
-# 新增: 回测摘要表格
-# ============================================================
 
 def _build_backtest_summary_table(result):
     """回测结果摘要HTML表格"""

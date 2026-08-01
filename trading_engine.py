@@ -15,10 +15,8 @@ import pandas as pd
 from tqdm import tqdm
 from datetime import datetime, timedelta
 
-import plotly.graph_objects as go
 
 from strategies import get_strategy, strategy_label
-import plotly.graph_objects as go
 
 
 # ============================================================
@@ -751,147 +749,82 @@ def print_trade_summary(result):
 
 
 def generate_equity_chart(result):
-    """生成收益曲线图 (Plotly HTML) — 美化版"""
+    """生成收益曲线图 (ECharts) — 净值+回撤+买卖点"""
     if result is None or not result['equity_curve']:
         return ''
 
-    dates = [e[0] for e in result['equity_curve']]
+    from report_echarts import echarts_script, UP, DOWN, GRID, TEXT, BLUE, GRAY
+
+    dates = [pd.Timestamp(e[0]).strftime('%Y-%m-%d') for e in result['equity_curve']]
     values = [e[1] for e in result['equity_curve']]
     initial = result['initial_capital']
     stats = result['stats']
 
-    # 净值序列
     nav = [v / initial for v in values]
-
-    # 回撤序列 (用于下方子图)
     peaks = np.maximum.accumulate(nav)
-    drawdowns = [(p - n) / p * 100 for p, n in zip(peaks, nav)]
+    drawdowns = [-((p - n) / p * 100) for p, n in zip(peaks, nav)]
 
-    from plotly.subplots import make_subplots
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.75, 0.25],
-        subplot_titles=('', ''),
-    )
-
-    # ---- 上图: 净值曲线 ----
-    # 渐变色填充
     final_ret = stats['total_return']
-    line_color = '#10b981' if final_ret >= 0 else '#ef4444'
-    fill_color = 'rgba(16,185,129,0.08)' if final_ret >= 0 else 'rgba(239,68,68,0.08)'
+    line_color = UP if final_ret >= 0 else DOWN
 
-    fig.add_trace(go.Scatter(
-        x=dates, y=nav, mode='lines',
-        name='策略净值',
-        line=dict(color=line_color, width=2.5, shape='spline', smoothing=0.8),
-        fill='tozeroy', fillcolor=fill_color,
-        hovertemplate='日期: %{x|%Y-%m-%d}<br>净值: %{y:.4f}<br>收益: %{text}<extra></extra>',
-        text=[f'{(n-1)*100:+.2f}%' for n in nav],
-    ), row=1, col=1)
+    # 买卖点
+    buy_pts, sell_pts = [], []
+    for t in result['trades']:
+        d = pd.Timestamp(t.date).strftime('%Y-%m-%d')
+        if d in dates:
+            idx = dates.index(d)
+            if t.direction == 'BUY':
+                buy_pts.append({'name': '买入', 'value': [d, round(nav[idx], 4)],
+                                'code': t.code, 'price': t.price, 'reason': t.reason})
+            else:
+                sell_pts.append({'name': '卖出', 'value': [d, round(nav[idx], 4)],
+                                 'code': t.code, 'price': t.price, 'pnl': round(t.pnl_pct * 100, 1),
+                                 'reason': t.reason})
 
-    # 基准线 (净值=1)
-    fig.add_hline(y=1.0, line_dash='dash', line_color='#94a3b8', line_width=1,
-                  row=1, col=1)
-
-    # 买卖标记
-    buy_trades = [t for t in result['trades'] if t.direction == 'BUY']
-    sell_trades = [t for t in result['trades'] if t.direction == 'SELL']
-
-    for t in buy_trades:
-        if t.date in dates:
-            idx = dates.index(t.date)
-            fig.add_trace(go.Scatter(
-                x=[t.date], y=[nav[idx]],
-                mode='markers',
-                marker=dict(symbol='triangle-up', size=9, color='#10b981',
-                            line=dict(width=1.5, color='white')),
-                name='买入' if t == buy_trades[0] else None,
-                showlegend=(t == buy_trades[0]),
-                legendgroup='buy',
-                hovertemplate=f'<b>🟢 买入</b><br>'
-                              f'{t.code} {t.name}<br>'
-                              f'价格: ¥{t.price:.2f}<br>'
-                              f'信号: {t.reason}<extra></extra>',
-            ), row=1, col=1)
-
-    for t in sell_trades:
-        if t.date in dates:
-            idx = dates.index(t.date)
-            sell_color = '#10b981' if t.pnl_pct > 0 else '#ef4444'
-            fig.add_trace(go.Scatter(
-                x=[t.date], y=[nav[idx]],
-                mode='markers',
-                marker=dict(symbol='triangle-down', size=9, color=sell_color,
-                            line=dict(width=1.5, color='white')),
-                name='卖出' if t == sell_trades[0] else None,
-                showlegend=(t == sell_trades[0]),
-                legendgroup='sell',
-                hovertemplate=f'<b>🔴 卖出</b><br>'
-                              f'{t.code} {t.name}<br>'
-                              f'盈亏: {t.pnl_pct:+.1%}<br>'
-                              f'原因: {t.reason}<extra></extra>',
-            ), row=1, col=1)
-
-    # ---- 下图: 回撤曲线 ----
-    fig.add_trace(go.Scatter(
-        x=dates, y=[-d for d in drawdowns],
-        mode='lines',
-        name='回撤',
-        line=dict(color='#ef4444', width=1),
-        fill='tozeroy', fillcolor='rgba(239,68,68,0.15)',
-        hovertemplate='日期: %{x|%Y-%m-%d}<br>回撤: %{y:.1f}%<extra></extra>',
-    ), row=2, col=1)
-
-    # ---- 布局美化 ----
-    ret_text = f'{final_ret:+.2%}'
-    ret_color = '#10b981' if final_ret >= 0 else '#ef4444'
-
-    fig.update_layout(
-        title=dict(
-            text=f'策略净值曲线  '
-                 f'<span style="font-size:14px;color:#64748b;">'
-                 f'收益 <span style="color:{ret_color};font-weight:600;">{ret_text}</span>'
-                 f' | Sharpe {stats["sharpe"]:.2f}'
-                 f' | 最大回撤 {stats["max_drawdown"]:.1%}'
-                 f' | 胜率 {stats["win_rate"]:.0%}</span>',
-            font=dict(size=16, color='#1e293b'),
-            x=0.01,
-        ),
-        height=480,
-        margin=dict(t=60, b=25, l=55, r=20),
-        paper_bgcolor='white',
-        plot_bgcolor='#fafbfc',
-        font=dict(family='-apple-system, "Microsoft YaHei", sans-serif', size=11, color='#475569'),
-        legend=dict(
-            orientation='h', y=1.08, x=1, xanchor='right',
-            font=dict(size=11), bgcolor='rgba(255,255,255,0)',
-        ),
-        hovermode='x unified',
-        hoverlabel=dict(bgcolor='white', bordercolor='#e2e8f0', font=dict(size=12)),
-    )
-
-    # 上图Y轴
-    fig.update_yaxes(
-        title_text='净值', gridcolor='#f1f5f9', zeroline=False,
-        tickformat='.2f', row=1, col=1,
-    )
-    # 上图X轴
-    fig.update_xaxes(gridcolor='#f1f5f9', row=1, col=1)
-
-    # 下图Y轴 (回撤)
-    fig.update_yaxes(
-        title_text='回撤%', gridcolor='#f1f5f9', zeroline=False,
-        tickformat='.0f', row=2, col=1,
-    )
-    # 下图X轴
-    fig.update_xaxes(
-        gridcolor='#f1f5f9',
-        tickformat='%m-%d',
-        row=2, col=1,
-    )
-
-    return fig.to_html(full_html=False, include_plotlyjs=False)
+    option = {
+        'tooltip': {
+            'trigger': 'axis',
+            'backgroundColor': '#fff', 'borderColor': '#e5e8ec', 'textStyle': {'color': '#1f2329'},
+            'formatter': "function(ps){var p=ps[0];var s='<b>'+p.axisValue+'</b>';"
+                         "ps.forEach(function(x){if(x.seriesName.indexOf('净值')>=0)s+='<br/>净值: '+x.value.toFixed(3);"
+                         "if(x.seriesName==='买入')s+='<br/>🟢 买入 '+x.data.code+' @'+x.data.price;"
+                         "if(x.seriesName==='卖出')s+='<br/>🔴 卖出 '+x.data.code+' @'+x.data.price+' ('+x.data.pnl+'%)';});return s;}",
+        },
+        'legend': {'top': 0, 'textStyle': {'color': TEXT}},
+        'grid': [
+            {'left': 55, 'right': 20, 'top': 40, 'bottom': 90, 'height': '58%'},
+            {'left': 55, 'right': 20, 'top': '78%', 'bottom': 40, 'height': '14%'},
+        ],
+        'xAxis': [
+            {'type': 'category', 'data': dates, 'axisLine': {'lineStyle': {'color': '#d9dde3'}},
+             'axisLabel': {'color': TEXT}, 'boundaryGap': False},
+            {'type': 'category', 'data': dates, 'axisLine': {'lineStyle': {'color': '#d9dde3'}},
+             'axisLabel': {'color': TEXT, 'show': False}, 'gridIndex': 1, 'boundaryGap': False},
+        ],
+        'yAxis': [
+            {'type': 'value', 'scale': True, 'splitLine': {'lineStyle': {'color': GRID}},
+             'axisLabel': {'color': TEXT, 'formatter': 'function(v){return v.toFixed(2);}'}},
+            {'type': 'value', 'scale': True, 'splitLine': {'lineStyle': {'color': GRID}},
+             'axisLabel': {'color': TEXT, 'formatter': 'function(v){return v + "%";}'}, 'gridIndex': 1},
+        ],
+        'dataZoom': [
+            {'type': 'inside', 'xAxisIndex': [0, 1]},
+            {'type': 'slider', 'xAxisIndex': [0, 1], 'height': 16, 'bottom': 10},
+        ],
+        'series': [
+            {'name': '策略净值', 'type': 'line', 'data': nav, 'showSymbol': False, 'smooth': True,
+             'lineStyle': {'color': line_color, 'width': 2.5},
+             'areaStyle': {'color': 'rgba(232,64,58,0.08)' if final_ret >= 0 else 'rgba(27,162,122,0.08)'}},
+            {'name': '买入', 'type': 'scatter', 'data': buy_pts, 'symbol': 'triangle', 'symbolSize': 11,
+             'itemStyle': {'color': DOWN, 'borderColor': '#fff', 'borderWidth': 1}},
+            {'name': '卖出', 'type': 'scatter', 'data': sell_pts, 'symbol': 'triangle', 'symbolRotate': 180,
+             'symbolSize': 11, 'itemStyle': {'color': UP, 'borderColor': '#fff', 'borderWidth': 1}},
+            {'name': '回撤', 'type': 'line', 'data': drawdowns, 'xAxisIndex': 1, 'yAxisIndex': 1,
+             'showSymbol': False, 'lineStyle': {'color': UP, 'width': 1},
+             'areaStyle': {'color': 'rgba(232,64,58,0.15)'}},
+        ],
+    }
+    return echarts_script('equity_chart', option, 480)
 
 
 def backtest_single_stock(code, history_dict, config, start_date_str='2025-01-01',
@@ -991,4 +924,3 @@ def backtest_single_stock(code, history_dict, config, start_date_str='2025-01-01
 
     return result
 
-    return fig.to_html(full_html=False, include_plotlyjs=False)
