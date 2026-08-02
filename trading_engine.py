@@ -338,6 +338,13 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     pending_sells = []    # [(pos, reason)] — T日收盘卖出信号 → T+1开盘执行
     pending_reduces = []  # [(pos, reason, ratio)] — T日收盘减仓信号 → T+1开盘执行
     pending_buys = []     # [(code, name, score, reason, entry_type)] — T日收盘买入信号 → T+1开盘执行
+
+    # 降频机制 (减少信号翻转交易, 默认关闭):
+    # min_holding_days: 最短持有天数 — 持有不足N天时忽略技术性卖出(死叉/趋势转弱), 止损-5%始终有效
+    # death_cross_confirm: SKDJ高位死叉连续N天确认 — 连续N天死叉才卖出 (慢牛中K>70常驻, 死叉多为噪声)
+    min_holding_days = int(config.get('min_holding_days', 0))
+    death_cross_confirm = int(config.get('death_cross_confirm', 0))
+    death_streak = {}     # {code: 连续死叉天数}
     if exec_next_open:
         print('  成交模式: 次日开盘价成交 (T日收盘信号 → T+1日早盘开盘价买卖)')
     elif buy_next_open:
@@ -379,6 +386,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                                           pos.shares, amount, reason, pnl_pct))
                 positions.remove(pos)
                 max_profit_tracker.pop(pos.code, None)
+                death_streak.pop(pos.code, None)
                 sold_today.add(pos.code)
                 if kelly_mode:
                     if pnl_pct > 0:
@@ -422,6 +430,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                                                       pos.pnl(hp)))
                             positions.remove(pos)
                             max_profit_tracker.pop(pos.code, None)
+                            death_streak.pop(pos.code, None)
                             sold_hp = True
                             break
                     if not sold_hp:
@@ -527,8 +536,22 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                                 else:
                                     kelly_losses.append(pos.pnl(reduce_price))
 
+            # 死叉连续天数跟踪 (每日更新, 与卖出触发独立)
+            if death_cross_confirm > 0 and hasattr(strat, 'is_death_cross'):
+                death_streak[pos.code] = death_streak.get(pos.code, 0) + 1 \
+                    if strat.is_death_cross(ind) else 0
+
             is_sell, reason = sell_signal_func(ind, pos.entry_price, holding_days,
                                                max_profit_tracker.get(pos.code, 0))
+            if is_sell:
+                # 最短持有期: 持有不足N天时忽略技术性卖出(死叉/趋势转弱), 止损始终有效
+                if min_holding_days > 0 and holding_days < min_holding_days \
+                        and '止损' not in reason:
+                    is_sell = False
+                # 死叉双日确认: SKDJ高位死叉需连续N天才卖 (持有期保护之上再过滤)
+                elif death_cross_confirm > 0 and '死叉' in reason \
+                        and death_streak.get(pos.code, 0) < death_cross_confirm:
+                    is_sell = False
             if is_sell:
                 to_sell.append((pos, ind['close'], reason))
 
@@ -547,6 +570,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             ))
             positions.remove(pos)
             max_profit_tracker.pop(pos.code, None)
+            death_streak.pop(pos.code, None)
             sold_today.add(pos.code)  # 当日禁买
 
             # 凯利公式: 记录盈亏
@@ -660,6 +684,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                         ))
                         positions.remove(pos)
                         max_profit_tracker.pop(pos.code, None)
+                        death_streak.pop(pos.code, None)
                         break
 
             # 动态仓位: 单只上限position_pct, 按强弱分比例缩放 (行情弱→分低→轻仓)

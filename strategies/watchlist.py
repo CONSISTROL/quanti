@@ -125,3 +125,8 @@ class WatchlistStrategy(BaseStrategy):
             return True, f'SKDJ高位死叉(K={k:.0f})'
 
         return False, ''
+
+    def is_death_cross(self, ind):
+        """当日是否SKDJ高位死叉状态 (K>70 且死叉, 与 sell_signal 判定一致)"""
+        k = ind.get('skdj_k', 50)
+        return k > 70 and ind.get('skdj_cross', 0) == -1

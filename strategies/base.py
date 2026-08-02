@@ -31,3 +31,7 @@ class BaseStrategy:
     def rebound_signal(self, ind, prev_close=None):
         """可选: 短线超跌反弹买点 (不实现则返回False)"""
         return False, ''
+
+    def is_death_cross(self, ind):
+        """可选: 当日是否为SKDJ高位死叉状态 (供引擎 death_cross_confirm 连续确认用)"""
+        return False
