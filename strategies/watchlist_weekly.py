@@ -113,11 +113,6 @@ class WatchlistWeeklyStrategy(BaseStrategy):
         if pnl <= -0.05:
             return True, f'止损({pnl:.1%})'
 
-        # 日线SKDJ高位(K>75) + DIF-DEA连续2天缩小 + 有浮盈 → 提前止盈 (控制回撤)
-        dk = ind.get('skdj_k', 50)
-        if dk > 75 and ind.get('hist_fall_win', False) and pnl > 0:
-            return True, f'日线高位+MACD缩2天(K={dk:.0f})'
-
         # 周线SKDJ死叉 (K<D 且 K 不低)
         if wk_k < wk_d and wk_k < 60:
             return True, f'周线SKDJ死叉(K={wk_k:.0f}<D={wk_d:.0f})'
@@ -126,4 +121,20 @@ class WatchlistWeeklyStrategy(BaseStrategy):
         if wk_ma5 > 0 and close < wk_ma5 and not ind.get('wk_ma5_rise', False):
             return True, f'跌破周线MA5({wk_ma5:.3f})趋势转弱'
 
+        # 日线SKDJ高位(K>80) + DIF-DEA连续2天缩小 → 清仓止盈 (控制回撤)
+        dk = ind.get('skdj_k', 50)
+        if dk > 80 and ind.get('hist_fall_win', False):
+            return True, f'日线极高+MACD缩2天(K={dk:.0f})'
+
         return False, ''
+
+    def reduce_signal(self, ind, entry_price=None):
+        """高位减仓: 日线K>75 + DIF-DEA连续2天缩小 → 卖出50% (保留底仓等反弹)"""
+        dk = ind.get('skdj_k', 50)
+        if dk > 75 and ind.get('hist_fall_win', False):
+            return True, 0.5
+        return False, 0
+
+    def add_position_signal(self, ind):
+        """低位加仓: 日线止跌确认 (SKDJ低位金叉/MACD金叉/深跌破轨) → 可加仓"""
+        return self._daily_stop_signal(ind) is not None

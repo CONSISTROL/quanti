@@ -352,12 +352,33 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     to_sell.append((pos, ind['close'], f'反弹到MA20({ma20:.2f})'))
                     continue
 
+            # 高位减仓 (部分卖出): 卖出50%保留底仓, 释放现金
+            reduce_fn = getattr(strat, 'reduce_signal', None)
+            if reduce_fn:
+                is_reduce, ratio = reduce_fn(ind, pos.entry_price)
+                if is_reduce and 0 < ratio < 1:
+                    reduce_shares = int(pos.shares * ratio / 100) * 100
+                    if reduce_shares >= 100 and reduce_shares < pos.shares:
+                        reduce_price = ind.get('skdj_close', ind.get('close', 0))
+                        cash += reduce_shares * reduce_price
+                        trades.append(TradeRecord(
+                            pos.code, pos.name, 'SELL', reduce_price, today,
+                            reduce_shares, reduce_shares * reduce_price,
+                            f'高位减仓{ratio:.0%}', pos.pnl(reduce_price)
+                        ))
+                        pos.shares -= reduce_shares
+                        if kelly_mode:
+                            if pos.pnl(reduce_price) > 0:
+                                kelly_wins.append(pos.pnl(reduce_price))
+                            else:
+                                kelly_losses.append(pos.pnl(reduce_price))
+
             is_sell, reason = sell_signal_func(ind, pos.entry_price, holding_days,
                                                max_profit_tracker.get(pos.code, 0))
             if is_sell:
                 to_sell.append((pos, ind['close'], reason))
 
-        # 执行卖出
+        # 执行卖出 (清仓)
         for pos, sell_price, reason in to_sell:
             pnl_pct = pos.pnl(sell_price)
             amount = pos.shares * sell_price
@@ -377,17 +398,20 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 else:
                     kelly_losses.append(pnl_pct)
 
-        # ---- 2. 扫描买入信号 ----
+        # ---- 2. 扫描买入信号 (含低位加仓 + 无现金卖高换低) ----
         available_slots = max_positions - len(positions)
         if available_slots > 0 and cash > initial_capital * 0.05:
             buy_candidates = []
             held_codes = {p.code for p in positions}
+            add_fn = getattr(strat, 'add_position_signal', None)
 
             today_str = today.strftime('%Y-%m-%d')
 
             for code in candidate_codes:
-                if code in held_codes or code in sold_today:
-                    continue  # 已持仓或当日已卖出 (当日禁买)
+                if code in sold_today:
+                    continue  # 当日已卖出 (当日禁买)
+                if code in held_codes and add_fn is None:
+                    continue  # 已持仓且策略不支持加仓
                 sina = pure_to_sina.get(code)
                 if not sina:
                     continue
@@ -454,9 +478,50 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             # 按信号强度排序, 买入前 available_slots 个
             buy_candidates.sort(key=lambda x: x[3], reverse=True)
             picks = buy_candidates[:available_slots]
+
+            # 无现金换仓: 有买入候选但现金不足 → 卖出持仓中最高位的 (K>75) 换资金
+            if picks and cash < min(p[2] for p in picks) * 100:
+                for pos in sorted(positions, key=lambda p: (
+                        precomputed.get(p.code, {}).get(today_str, {}).get('skdj_k', 0)), reverse=True):
+                    pdata = precomputed.get(pos.code, {}).get(today_str, {})
+                    if pdata.get('skdj_k', 50) > 75:
+                        hp = pdata.get('skdj_close', pdata.get('close', 0))
+                        cash += pos.shares * hp
+                        trades.append(TradeRecord(
+                            pos.code, pos.name, 'SELL', hp, today,
+                            pos.shares, pos.shares * hp, '高位换仓(K>75)', pos.pnl(hp)
+                        ))
+                        positions.remove(pos)
+                        max_profit_tracker.pop(pos.code, None)
+                        break
+
             # 动态仓位: 单只上限position_pct, 按强弱分比例缩放 (行情弱→分低→轻仓)
-            # 分散持股时强势标的多配、弱势标的少配, 行情整体弱则自然降仓
+            # 已持仓低位标的 → 加仓补足到单只上限; 新标的 → 按强弱分分配
             for code, name, buy_price, score, reason, entry_type in picks:
+                # 加仓: 已持仓且低位 (补足到单只上限)
+                pos = next((p for p in positions if p.code == code), None)
+                if pos is not None:
+                    total_assets = cash + sum(p.shares * p._last_price if hasattr(p, '_last_price') else p.shares * buy_price for p in positions)
+                    cur_value = pos.shares * buy_price
+                    target = position_pct * total_assets
+                    add_alloc = max(0, min(cash, target - cur_value))
+                    if add_alloc < buy_price * 100:
+                        continue
+                    shares = int(add_alloc / buy_price / 100) * 100
+                    if shares <= 0:
+                        continue
+                    amount = shares * buy_price
+                    cash -= amount
+                    old_cost = pos.entry_price * pos.shares
+                    pos.shares += shares
+                    pos.capital += amount
+                    pos.entry_price = (old_cost + amount) / pos.shares  # 摊薄成本
+                    trades.append(TradeRecord(
+                        code, name, 'BUY', buy_price, today, shares, amount,
+                        f'低位加仓:{reason}'
+                    ))
+                    continue
+
                 if kelly_mode:
                     alloc = cash * calc_kelly_fraction()
                 else:
