@@ -343,18 +343,10 @@ def main():
             end_date=bt_cfg.get('end_date', '2026-07-27'),
         )
 
-        # 原教旨模式: 系统信号按信号日收盘价即时成交 (主报告系统买卖信号记录 = 原教旨收益;
-        # 用户A延后1交易日执行的成交流水见自选池轮动分析报告, 由 watchlist_backtest 延迟成交模式生成)
-        bt_tr_cfg = dict(tr_cfg)
-        bt_tr_cfg['exec_next_open'] = False
-        bt_tr_cfg['exec_next_close'] = False
-        bt_tr_cfg['buy_next_open'] = False
-        print('  成交模式: 原教旨 (信号日收盘价即时成交, 主报告系统信号记录口径)')
-
         result = run_swing_backtest(
             history_dict=data['history'],
             scored_df=scored_df,
-            config=bt_tr_cfg,
+            config=tr_cfg,
             start_date_str=bt_cfg.get('start_date', '2026-01-01'),
             end_date_str=bt_cfg.get('end_date', '2026-07-27'),
             precomputed=precomputed,

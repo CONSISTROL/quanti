@@ -456,60 +456,42 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
         {equity_chart_html}
     </div>""")
 
-        # 操作记录表
+        # 操作记录表 (系统买卖信号: 价格/盈亏按信号日信号价口径)
         if trades:
-            # 日期→净值映射 (键格式与下方查询一致: %Y-%m-%d)
-            date_nav = {}
-            init_cap = trade_result['initial_capital']
-            for d, v in trade_result.get('equity_curve', []):
-                date_nav[pd.Timestamp(d).strftime('%Y-%m-%d')] = v
-
             html_parts.append("""
     <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 系统买卖信号记录</h2>
     <table style="margin-bottom:20px;">
     <thead><tr>
-        <th>信号日</th><th>执行日</th><th>方向</th><th>代码</th><th>名称</th>
-        <th>价格</th><th>数量</th><th>金额</th><th>盈亏</th><th>累计</th><th>总市值</th><th>仓位</th><th>原因</th>
+        <th>信号日</th><th>方向</th><th>代码</th><th>名称</th>
+        <th>信号价</th><th>数量</th><th>金额</th><th>盈亏</th><th>原因</th>
     </tr></thead>
     <tbody>""")
-            held = {}  # 跟踪持仓
             for t in trades:
                 dir_css = 'color:#27ae60;font-weight:600;' if t.direction == 'BUY' else 'color:#e74c3c;font-weight:600;'
                 dir_label = '买入' if t.direction == 'BUY' else '卖出'
-                pnl_str = f'{t.pnl_pct:+.1%}' if t.direction == 'SELL' else '-'
+                # 信号口径: 价格 = 信号日收盘价, 盈亏 = 按信号价计算的收益 (非延迟成交时与执行口径相同)
+                sig_price = getattr(t, 'signal_price', None) or t.price
+                pnl_sys = getattr(t, 'pnl_signal', None)
+                if pnl_sys is None:
+                    pnl_sys = t.pnl_pct
+                pnl_str = f'{pnl_sys:+.1%}' if t.direction == 'SELL' else '-'
                 pnl_css = ''
                 if t.direction == 'SELL':
-                    pnl_css = 'color:#27ae60;' if t.pnl_pct > 0 else 'color:#e74c3c;'
-                # 更新持仓
-                if t.direction == 'BUY':
-                    held[t.code] = (t.shares, t.price)
-                else:
-                    held.pop(t.code, None)
-                # 累计收益 + 总市值 + 仓位
-                d_short = t.date.strftime('%Y-%m-%d')
-                nav = date_nav.get(d_short, init_cap)
-                cum = (nav / init_cap - 1) if init_cap > 0 else 0
-                cum_css = 'color:#27ae60;font-weight:600;' if cum >= 0 else 'color:#e74c3c;font-weight:600;'
-                held_val = sum(s * p for s, p in held.values())
-                pos_ratio = held_val / nav if nav > 0 else 0
+                    pnl_css = 'color:#27ae60;' if pnl_sys > 0 else 'color:#e74c3c;'
                 html_parts.append(f"""<tr>
                     <td>{t.signal_date.strftime('%Y-%m-%d')}</td>
-                    <td>{t.date.strftime('%Y-%m-%d')}</td>
                     <td style="{dir_css}">{dir_label}</td>
                     <td><strong>{t.code}</strong></td>
                     <td>{t.name}</td>
-                    <td>{t.price:.2f}</td>
+                    <td>{sig_price:.2f}</td>
                     <td>{t.shares}</td>
-                    <td>¥{t.amount:,.0f}</td>
+                    <td>¥{sig_price * t.shares:,.0f}</td>
                     <td style="{pnl_css}font-weight:600;">{pnl_str}</td>
-                    <td style="{cum_css}">{cum:+.1%}</td>
-                    <td>¥{nav:,.0f}</td>
-                    <td>{pos_ratio:.0%}</td>
                     <td>{t.reason}</td>
                 </tr>""")
             html_parts.append("""
     </tbody></table>
-    <p style="color:#999;font-size:12px;margin-top:-12px;">本表 = 系统(回测引擎)原教旨买卖信号流水 — 按<strong>信号日收盘价即时成交</strong>(信号日=执行日, 价格/盈亏均为信号价口径); 用户A延后1交易日执行的成交流水(执行日=信号日+1交易日)见自选池轮动分析报告"用户A操作记录"</p>""")
+    <p style="color:#999;font-size:12px;margin-top:-12px;">本表 = 系统买卖信号记录 — 价格/盈亏按<strong>信号日信号价口径</strong>(信号当日收盘价成交的收益, 与成交模式无关); 用户A按次日执行价成交的价格/盈亏见自选池轮动分析报告"用户A操作记录"</p>""")
 
         # 当前持仓
         if trade_result.get('final_positions'):
