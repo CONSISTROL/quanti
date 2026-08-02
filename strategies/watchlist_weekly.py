@@ -59,8 +59,22 @@ class WatchlistWeeklyStrategy(BaseStrategy):
 
         return score, '+'.join(reasons)
 
+    def _daily_stop_signal(self, ind):
+        """日线止跌信号 (必须): SKDJ低位金叉 / MACD金叉 / BOLL明显下穿下轨
+        弱止跌(阴线缩)不算 - 2025-03-10纳指ETF SKDJ死叉中仅阴线缩, 误买"""
+        k = ind.get('skdj_k', 50)
+        if ind.get('skdj_cross', 0) == 1 and k < 50:
+            return f'日线SKDJ低位金叉(K={k:.0f})'
+        if ind.get('macd_cross', 0) == 1:
+            return '日线MACD金叉'
+        close = ind.get('skdj_close', ind.get('close', 0))
+        boll_low = ind.get('boll_low', 0)
+        if boll_low > 0 and close < boll_low * 0.97:
+            return f'日线深跌破BOLL下轨(价/下轨={close / boll_low:.2f})'
+        return None
+
     def buy_signal(self, ind, **ctx):
-        """周线强弱分买入 + 位置/动能过滤"""
+        """周线强弱分买入 + 周线位置过滤 + 日线止跌确认"""
         # 动能确认: 周线MACD回升 (DIF-DEA较前日增长)
         if not ind.get('wk_macd_rise', False):
             return False, 0, '周线MACD未回升'
@@ -71,15 +85,22 @@ class WatchlistWeeklyStrategy(BaseStrategy):
             return False, 0, f'周线SKDJ高位(K={wk_k:.0f})'
 
         score, reason = self.strength_score(ind)
-        if score >= WATCH_BUY_MIN:
-            return True, score, f'周线强弱分{score}: {reason}'
-        return False, score, ''
+        if score < WATCH_BUY_MIN:
+            return False, score, ''
+
+        # 日线止跌确认 (必须): 止跌信号出现 或 BOLL明显下穿LOW
+        stop = self._daily_stop_signal(ind)
+        if stop is None:
+            return False, 0, '日线未止跌(无SKDJ金叉/MACD金叉/深跌破轨)'
+
+        return True, score, f'周线强弱分{score}: {reason}+{stop}'
 
     def sell_signal(self, ind, entry_price, holding_days, max_profit_seen=0):
-        """周线转弱卖出:
-        1. 周线SKDJ死叉状态 (K<D 且 K从高位回落)
-        2. 跌破周线MA5 且 周线MA5下行
-        3. 止损: -5%
+        """周线转弱卖出 + 日线高位缩小提前止盈:
+        1. 日线SKDJ高位(K>70) 且 DIF-DEA缩小 → 提前止盈控制回撤
+        2. 周线SKDJ死叉状态 (K<D 且 K从高位回落)
+        3. 跌破周线MA5 且 周线MA5下行
+        4. 止损: -5%
         """
         close = ind.get('skdj_close', ind.get('close', 0))
         pnl = (close / entry_price - 1) if entry_price > 0 else 0
@@ -91,6 +112,11 @@ class WatchlistWeeklyStrategy(BaseStrategy):
         # 止损
         if pnl <= -0.05:
             return True, f'止损({pnl:.1%})'
+
+        # 日线SKDJ高位(K>75) + DIF-DEA连续2天缩小 + 有浮盈 → 提前止盈 (控制回撤)
+        dk = ind.get('skdj_k', 50)
+        if dk > 75 and ind.get('hist_fall_win', False) and pnl > 0:
+            return True, f'日线高位+MACD缩2天(K={dk:.0f})'
 
         # 周线SKDJ死叉 (K<D 且 K 不低)
         if wk_k < wk_d and wk_k < 60:
