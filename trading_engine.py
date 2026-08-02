@@ -489,6 +489,13 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                             score += 2
                             reason += '+龙头TOP10' if reason else '龙头TOP10'
 
+                # 自选池优先级: config watchlist_priority 指定标的评分+n (与其他自选比时优先买入)
+                pri = config.get('watchlist_priority', {})
+                bonus = pri.get(code) or pri.get(str(code).zfill(6))
+                if bonus:
+                    score += int(bonus)
+                    reason += f'+优先级{bonus}' if reason else f'优先级{bonus}'
+
                 if score >= min_buy_score:
                     # 获取名称
                     name = ''
