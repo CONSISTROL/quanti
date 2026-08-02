@@ -524,6 +524,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
                 if kelly_mode:
                     alloc = cash * calc_kelly_fraction()
+                elif config.get('full_position', False):
+                    alloc = cash * position_pct  # 强制满仓, 不做强弱分缩放
                 else:
                     weight = position_pct * min(max(score, 0) / 10.0, 1.0)
                     alloc = cash * weight

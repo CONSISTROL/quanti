@@ -104,11 +104,23 @@ python run_test.py --list                 # 列出所有测试
 
 | 测试模块 | 说明 |
 |----------|------|
+| **watchlist_backtest** ⭐ | 自选池轮动回测（config watchlist 指定，含ETF/LOF，单持仓满仓卖弱买强）|
 | **verify_signals** | 7个用户信号验证（指定策略在指定股票上的买卖信号命中率）|
 | **backtest_user** | 用户波段策略回测（周KDJ金叉/死叉 + 日线RSI/BOLL，3只股票）|
 | **grid_search_ref** | 参考策略参数网格搜索 |
 | **grid_search_hybrid** | 混合策略参数搜索 |
 | **run_20_stocks** | 20支股票批量回测（按 test.strategy 策略）|
+
+**自选池轮动回测（watchlist_backtest）**：
+
+```bash
+python run_test.py --module watchlist_backtest
+```
+
+- 自选池：`config.json` 的 `watchlist` 字段（股票/ETF/LOF 混合）
+- 数据源：按 `data.source`（quantdash 默认，前复权含份额折算）
+- 规则：单持仓 100% 满仓轮动，强弱评分卖弱买强（`full_position: true` 时不做强弱分缩放）
+- 输出：组合总收益 + 每只个股独立回测 + ECharts 报告（净值对比/买卖点K线）
 
 ## 策略架构（strategies/ 注册表）
 
@@ -169,7 +181,7 @@ class 策略名(BaseStrategy):
 
 > 同日规则：卖出当天不买回（避免同日换手白交手续费）
 
-**仓位管理**：最多 4 只；启用凯利公式（`kelly_mode`）时按历史盈亏动态分配，否则每只 25% 资金
+**仓位管理**：最多 4 只；启用凯利公式（`kelly_mode`）时按历史盈亏动态分配，否则每只 25% 资金。设置 `full_position: true` 可强制单笔满仓（跳过按评分缩放，回测示例见下方自选池轮动）
 
 **回测示例（中国石油 601857，2025-01-01 ~ 2026-07-27）**：
 
@@ -197,7 +209,8 @@ Sharpe:     2.30
         "initial_capital": 150000,      // 初始资金
         "max_positions": 4,             // 最大持仓数
         "position_pct": 0.25,           // 单只仓位占比（未启用凯利时）
-        "kelly_mode": true,             // 凯利公式动态仓位
+        "kelly_mode": false,            // 凯利公式动态仓位
+        "full_position": false,         // 强制满仓（true=忽略评分缩放, 每笔全仓买入）
         "stop_loss": -0.03,             // 止损线
         "take_profit": 0.08,            // 止盈线
         "max_holding_days": 0,          // 最大持有天数（0=不限制）
@@ -215,7 +228,7 @@ Sharpe:     2.30
         "top": 30
     },
     "data": {
-        "hist_days": 1200,             // 历史K线天数
+        "hist_days": 4000,             // 历史K线天数 (QuantDash免费单只上限4000根, 约16年)
         "workers": 8,                  // 数据下载并发数
         "include_etf_lof": false,      // 是否纳入ETF/LOF
         "exclude_gem": true,           // 排除创业板(300xxx)
@@ -245,7 +258,9 @@ Sharpe:     2.30
   - `python -m data_sources.sina 601857 159941 160723`
 - 缓存: `cache/quantdash_watchlist_YYYYMMDD.pkl` / `cache/sina_watchlist_YYYYMMDD.pkl` (当日有效, 自动增量)
 
-**限制**: QuantDash 免费版**不支持批量接口** (`klines.batch` 需付费升级), 只能单只串行拉取 (单只上限3000根, 支持日/周线)。自选池5只约8秒 + 当日缓存复用, 实际无感; 全市场扫描 (数千只) 仍需 akshare 数据源 (`main.py`)。
+**限制**: QuantDash 免费版**不支持批量接口** (`klines.batch` 需付费升级), 只能单只串行拉取 (单只上限4000根约16年, 支持日/周线)。自选池5只约8秒 + 当日缓存复用, 实际无感; 全市场扫描 (数千只) 仍需 akshare 数据源 (`main.py`)。
+
+**缓存注意**: 修改 `data.hist_days` 后需删除当日缓存 `cache/quantdash_watchlist_YYYYMMDD.pkl`, 否则仍从旧缓存读取。
 
 ## 项目结构
 

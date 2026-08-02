@@ -140,7 +140,7 @@ def _fetch_quantdash_kline(client, code, max_bars=1200):
     """单只个股/ETF 前复权日线 → 统一格式DataFrame"""
     sym = _to_qd_symbol(code)
     df = client.klines.get(
-        sym, period='1d', count=min(max_bars, 1200),
+        sym, period='1d', count=min(max_bars, 4000),  # 免费单只上限4000根(约16年)
         adjust='forward', to_dataframe=True)
     if df is None or len(df) == 0:
         return None
