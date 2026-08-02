@@ -545,6 +545,203 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     # === 详细表格 ===
     html_parts.append(_build_table(top))
 
+    # === 表格列筛选 JS (行数>=10的表格自动启用) ===
+    html_parts.append("""
+<script>
+/* 表格列筛选: 点击表头▾打开面板 (数值列=范围筛选, 枚举列=多选, 长文本列=包含搜索) */
+(function () {
+  'use strict';
+  function normText(s) { return (s == null ? '' : String(s)).trim(); }
+  function numVal(s) {
+    if (s == null) return null;
+    var t = String(s).replace(/[,¥\\s]/g, '');
+    if (t === '' || t === '-') return null;
+    if (t.charAt(t.length - 1) === '%') t = t.slice(0, -1);
+    if (!/^[+-]?\\d*\\.?\\d+$/.test(t)) return null;
+    return parseFloat(t);
+  }
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  document.querySelectorAll('table').forEach(function (tbl) {
+    var thead = tbl.querySelector('thead'), tbody = tbl.querySelector('tbody');
+    if (!thead || !tbody || tbody.rows.length < 10) return;
+    var ths = Array.prototype.slice.call(thead.rows[0].cells);
+    var rows = Array.prototype.slice.call(tbody.rows);
+    var nCols = ths.length, states = [], allVals = [], c;
+
+    /* 1. 列类型判定: 含单位(¥/%)且可数值 → 数值列; 唯一值<=40 → 多选; 纯数字 → 数值列; 其余 → 文本包含 */
+    for (c = 0; c < nCols; c++) {
+      var numCnt = 0, unitCnt = 0, tot = 0, seen = {}, vals = [];
+      rows.forEach(function (r) {
+        var td = r.cells[c]; if (!td) return;
+        var t = normText(td.textContent);
+        tot++;
+        if (numVal(t) !== null) numCnt++;
+        if (/[¥%]/.test(t)) unitCnt++;
+        if (!(t in seen)) { seen[t] = 1; vals.push(t); }
+      });
+      var st;
+      if (unitCnt > 0 && numCnt > 0 && numCnt >= tot * 0.4) {
+        st = { type: 'num', min: null, max: null };
+      } else if (vals.length <= 40) {
+        st = { type: 'check', selected: new Set(vals) };
+      } else if (numCnt >= tot * 0.7) {
+        st = { type: 'num', min: null, max: null };
+      } else {
+        st = { type: 'text', keyword: '' };
+      }
+      st.col = c; st.active = false;
+      states.push(st);
+      allVals.push(vals);
+    }
+
+    /* 2. 表格上方状态条 */
+    var bar = document.createElement('div');
+    bar.className = 'filter-bar';
+    tbl.parentNode.insertBefore(bar, tbl);
+
+    function rowShown(r) {
+      for (var c2 = 0; c2 < nCols; c2++) {
+        var st = states[c2]; if (!st.active) continue;
+        var td = r.cells[c2], t = normText(td ? td.textContent : '');
+        if (st.type === 'num') {
+          var n = numVal(t);
+          if (n === null) return false;
+          if (st.min != null && n < st.min) return false;
+          if (st.max != null && n > st.max) return false;
+        } else if (st.type === 'check') {
+          if (!st.selected.has(t)) return false;
+        } else {
+          if (st.keyword && t.indexOf(st.keyword) < 0) return false;
+        }
+      }
+      return true;
+    }
+    function apply() {
+      var shown = 0;
+      rows.forEach(function (r) {
+        var ok = rowShown(r);
+        r.style.display = ok ? '' : 'none';
+        if (ok) shown++;
+      });
+      var act = states.filter(function (s) { return s.active; }).length;
+      ths.forEach(function (th, idx) { th.classList.toggle('filter-active', states[idx].active); });
+      if (act) {
+        bar.innerHTML = '<span>已筛选 <b>' + shown + '</b> / ' + rows.length + ' 行</span>'
+          + '<span class="filter-clear" title="恢复全部">清除全部筛选</span>';
+        bar.style.display = 'flex';
+        bar.querySelector('.filter-clear').onclick = function () {
+          states.forEach(function (s) {
+            s.active = false; s.min = null; s.max = null; s.keyword = '';
+            if (s.type === 'check') s.selected = new Set(allVals[s.col]);
+          });
+          if (activeCol != null) closeFloat();
+          apply();
+        };
+      } else { bar.style.display = 'none'; }
+    }
+
+    /* 3. 浮层面板 (fixed定位, 避开table的overflow裁剪) */
+    var floatPanel = null, activeCol = null;
+    function closeFloat() {
+      if (floatPanel) { floatPanel.classList.remove('open'); floatPanel.innerHTML = ''; }
+      activeCol = null;
+    }
+    function buildPanel(c) {
+      var st = states[c], html = '';
+      if (st.type === 'num') {
+        html += '<div class="filter-num">最小值 <input class="mi" type="number" step="any" value="'
+          + (st.min == null ? '' : st.min) + '"></div>'
+          + '<div class="filter-num">最大值 <input class="ma" type="number" step="any" value="'
+          + (st.max == null ? '' : st.max) + '"></div>';
+      } else if (st.type === 'check') {
+        html += '<input class="filter-input fq" placeholder="搜索值..."><div class="filter-scroll"></div>';
+      } else {
+        html += '<input class="filter-input ft" placeholder="包含文本..." value="' + esc(st.keyword || '') + '">';
+      }
+      html += '<div class="filter-actions"><button class="clr">清除本列</button></div>';
+      floatPanel.innerHTML = html;
+
+      if (st.type === 'num') {
+        var mi = floatPanel.querySelector('.mi'), ma = floatPanel.querySelector('.ma');
+        mi.oninput = function () {
+          st.min = mi.value === '' ? null : parseFloat(mi.value);
+          st.active = st.min != null || st.max != null; apply();
+        };
+        ma.oninput = function () {
+          st.max = ma.value === '' ? null : parseFloat(ma.value);
+          st.active = st.min != null || st.max != null; apply();
+        };
+      } else if (st.type === 'check') {
+        var fq = floatPanel.querySelector('.fq');
+        fq.oninput = function () { renderCheck(c, fq.value); };
+        renderCheck(c, '');
+      } else {
+        var ft = floatPanel.querySelector('.ft');
+        ft.oninput = function () { st.keyword = ft.value; st.active = !!st.keyword; apply(); };
+      }
+      floatPanel.querySelector('.clr').onclick = function () {
+        st.active = false; st.min = null; st.max = null; st.keyword = '';
+        if (st.type === 'check') st.selected = new Set(allVals[c]);
+        buildPanel(c); apply(); closeFloat();
+      };
+    }
+    function renderCheck(c, kw) {
+      var st = states[c], box = floatPanel.querySelector('.filter-scroll');
+      var html = '', i;
+      allVals[c].forEach(function (v) {
+        if (kw && v.indexOf(kw) < 0) return;
+        html += '<label class="filter-opt"><input type="checkbox" data-v="' + esc(v) + '"'
+          + (st.selected.has(v) ? ' checked' : '') + '>' + esc(v) + '</label>';
+      });
+      box.innerHTML = html;
+      var chks = box.querySelectorAll('input');
+      for (i = 0; i < chks.length; i++) {
+        chks[i].onchange = function () {
+          var v = this.getAttribute('data-v');
+          if (this.checked) st.selected.add(v); else st.selected.delete(v);
+          st.active = true;
+          apply();
+        };
+      }
+    }
+
+    /* 4. 表头: ▾按钮 + 点击打开面板 */
+    ths.forEach(function (th, c) {
+      var btn = document.createElement('span');
+      btn.className = 'filter-btn'; btn.textContent = '▾'; btn.title = '筛选此列';
+      th.appendChild(btn);
+      th.onclick = function (e) {
+        e.stopPropagation();
+        if (activeCol === c && floatPanel && floatPanel.classList.contains('open')) { closeFloat(); return; }
+        if (!floatPanel) {
+          floatPanel = document.createElement('div');
+          floatPanel.className = 'filter-panel';
+          document.body.appendChild(floatPanel);
+        }
+        activeCol = c;
+        buildPanel(c);
+        var r = btn.getBoundingClientRect();
+        var pw = Math.min(220, window.innerWidth - 16);
+        floatPanel.style.left = Math.max(4, Math.min(r.right - pw + 8, window.innerWidth - pw - 4)) + 'px';
+        floatPanel.style.top = (r.bottom + 4) + 'px';
+        floatPanel.classList.add('open');
+      };
+    });
+
+    document.addEventListener('click', function (e) {
+      if (floatPanel && activeCol != null && !floatPanel.contains(e.target)) closeFloat();
+    });
+    window.addEventListener('scroll', function () { if (activeCol != null) closeFloat(); }, true);
+    window.addEventListener('resize', function () { if (activeCol != null) closeFloat(); });
+  });
+})();
+</script>
+""")
+
     # === 免责声明 ===
     html_parts.append("""
     <div class="disclaimer">
@@ -648,6 +845,45 @@ def _html_head(backtest_date=None):
     text-align: center; color: #aaa; font-size: 12px;
     margin-top: 24px; padding: 16px; border-top: 1px solid #e0e0e0;
   }}
+  /* ---- 表格列筛选 ---- */
+  .filter-btn {{
+    cursor: pointer; user-select: none; font-size: 11px; margin-left: 4px; opacity: .45;
+  }}
+  th:hover .filter-btn, .filter-btn:hover, .filter-active .filter-btn {{ opacity: 1; }}
+  .filter-active {{ background: #3a3a6e; }}
+  .filter-panel {{
+    position: fixed; min-width: 210px; max-width: 300px;
+    background: #fff; color: #333; border: 1px solid #d5d9e2; border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.18); z-index: 9999; padding: 8px;
+    text-align: left; font-size: 12px; display: none;
+  }}
+  .filter-panel.open {{ display: block; }}
+  .filter-scroll {{ max-height: 220px; overflow-y: auto; margin-top: 4px; }}
+  .filter-opt {{ display: block; padding: 3px 6px; cursor: pointer; border-radius: 4px; white-space: nowrap; }}
+  .filter-opt:hover {{ background: #f0f2f7; }}
+  .filter-opt input {{ margin-right: 6px; vertical-align: middle; }}
+  .filter-input {{
+    width: 100%; font-size: 12px; padding: 4px 6px; border: 1px solid #c8cdd6;
+    border-radius: 4px; margin-bottom: 4px; box-sizing: border-box;
+  }}
+  .filter-num {{
+    display: flex; gap: 6px; align-items: center; font-size: 12px; margin-bottom: 4px;
+  }}
+  .filter-num input {{ width: 80px; font-size: 12px; padding: 3px 5px; border: 1px solid #c8cdd6; border-radius: 4px; }}
+  .filter-actions {{ display: flex; gap: 6px; margin-top: 6px; }}
+  .filter-actions button {{
+    flex: 1; font-size: 11px; padding: 3px 0; cursor: pointer; border: 1px solid #c8cdd6;
+    border-radius: 4px; background: #fff;
+  }}
+  .filter-actions button:hover {{ background: #f0f2f7; }}
+  .filter-bar {{
+    font-size: 12px; color: #555; margin: 6px 0; align-items: center; gap: 10px;
+  }}
+  .filter-clear {{
+    cursor: pointer; color: #e74c3c; border: 1px solid #e74c3c; border-radius: 4px;
+    padding: 1px 8px; font-size: 11px;
+  }}
+  .filter-clear:hover {{ background: #fdecea; }}
   @media (max-width: 768px) {{
     .charts-grid {{ grid-template-columns: 1fr; }}
     .cards {{ grid-template-columns: repeat(2, 1fr); }}
