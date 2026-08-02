@@ -122,7 +122,8 @@ python run_test.py --module watchlist_backtest
 - 自选池：`config.json` 的 `watchlist` 字段（股票/ETF/LOF 混合）
 - 数据源：按 `data.source`（quantdash 默认，前复权含份额折算）
 - 规则：单持仓 100% 满仓轮动，强弱评分卖弱买强（`full_position: true` 时不做强弱分缩放）
-- 输出：组合总收益 + 每只个股独立回测 + ECharts 报告（净值对比/买卖点K线）
+- 输出：组合总收益 + 每只个股独立回测 + ECharts 报告（净值对比/买卖点K线/实盘操作对照表）
+- 实盘对照：在 config `trading.manual_trades` 记录你的实际操作（日期/代码/方向/价格/数量/备注），ECharts 报告底部"📝 实盘操作记录"表逐行对照系统回测同日操作（含信号原因），方便核对你是否按系统决策执行
 
 ## 策略架构（strategies/ 注册表）
 
@@ -243,11 +244,12 @@ Sharpe:     2.30
         "market_ma": 20,                // 大盘过滤均线周期 (20/60/120/250)
         "watchlist_priority": {},       // 自选池优先级: {"159941": 2} = 该标的评分+2优先买入 (实测+1为甜点位, 见下方结论)
         "exec_next_open": false,        // 次日开盘价成交: T日收盘信号→T+1早盘开盘价买卖 (模拟真实使用场景)
-        "exec_next_close": false,       // 次日尾盘价成交: T日收盘信号→T+1尾盘收盘价买卖 (15:57收盘前手动交易, 实测优先级1最优+1759%)
+        "exec_next_close": true,        // 次日尾盘价成交: T日收盘信号→T+1尾盘收盘价买卖 (15:57收盘前手动交易, 实测优先级1最优+1759%)
         "buy_next_open": false,         // 仅买入按次日开盘价 (卖出按信号当日收盘, 测试买入延迟的独立影响)
         "min_holding_days": 0,          // 最短持有天数: 期内忽略技术性卖出(死叉/趋势), 止损-5%始终有效 (实测砍收益, 慎用)
         "death_cross_confirm": 0,       // SKDJ高位死叉连续N天确认才卖 (默认0=关; 实测2天收益-400pt)
         "positions": [],                // 真实持仓覆盖(次日操作计划用): [{"code": "159941", "entry": 1.574}]
+        "manual_trades": [],            // 实盘操作记录(HTML报告对照表用): [{"date": "2026-07-31", "code": "159941", "side": "SELL", "price": 1.574, "shares": 50000, "note": "尾盘卖出"}]
         "stop_loss": -0.03,             // 止损线
         "take_profit": 0.08,            // 止盈线
         "max_holding_days": 0,          // 最大持有天数（0=不限制）

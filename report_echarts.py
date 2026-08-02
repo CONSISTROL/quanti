@@ -85,10 +85,12 @@ def _ohlc_and_ma(df, precomputed, code):
     return ohlc, ma5, ma20, boll
 
 
-def generate_echarts_report(combo, per_stock, output_path):
+def generate_echarts_report(combo, per_stock, output_path, manual_trades=None):
     """
     combo: dict(eq=[(date,value)], initial, stats, trades, name='组合轮动')
     per_stock: {code: dict(name, eq, initial, trades, df, precomputed)}
+    manual_trades: 实盘操作记录 (config trading.manual_trades):
+        [{"date": "2026-08-04", "code": "159941", "side": "BUY", "price": 1.45, "shares": 10000, "note": ""}]
     """
     # ---- 1. 净值对比数据 ----
     # 统一日期轴 = 组合的完整日期; 每只个股按日期对齐 (上市前缺失位置填null)
@@ -120,10 +122,43 @@ def generate_echarts_report(combo, per_stock, output_path):
         kline_data.append({'code': code, 'name': ps['name'], 'ohlc': ohlc,
                            'ma5': ma5, 'ma20': ma20, 'boll': boll, 'buys': buys, 'sells': sells})
 
+    # ---- 4. 实盘操作记录 (config manual_trades, 与回测系统同日操作对照) ----
+    stock_names = {code: ps['name'] for code, ps in per_stock.items()}
+    sys_map = {}  # date → [(方向, code, price, reason)]
+    for t in combo.get('trades', []):
+        d = pd.Timestamp(t.date).strftime('%Y-%m-%d')
+        sys_map.setdefault(d, []).append(t)
+
+    manual = []
+    for mt in (manual_trades or []):
+        cc = str(mt.get('code', '')).zfill(6)
+        side = str(mt.get('side', '')).upper()
+        price = float(mt.get('price', 0))
+        shares = int(mt.get('shares', 0))
+        date_str = str(mt.get('date', ''))[:10]
+        sys_ops = sys_map.get(date_str, [])
+        sys_text = '; '.join(
+            f"{'买' if t.direction == 'BUY' else '卖'} {t.code} @{t.price:.3f} ({t.reason})"
+            for t in sys_ops)
+        manual.append({
+            'date': date_str,
+            'code': cc,
+            'name': stock_names.get(cc, cc),
+            'side': side,
+            'side_cn': '买入' if side == 'BUY' else ('卖出' if side == 'SELL' else side),
+            'price': round(price, 3),
+            'shares': shares,
+            'amount': round(price * shares, 2),
+            'note': str(mt.get('note', '')),
+            'sys': sys_text,
+        })
+    manual.sort(key=lambda x: x['date'])
+
     payload = {
         'nav_series': nav_series,
         'bar_data': bar_data,
         'kline_data': kline_data,
+        'manual_trades': manual,
         'stats': {k: (round(v * 100, 2) if isinstance(v, float) and k in ('total_return', 'annual_return', 'max_drawdown', 'win_rate') else v)
                   for k, v in combo['stats'].items()},
         'initial': combo['initial'],
@@ -153,6 +188,13 @@ def generate_echarts_report(combo, per_stock, output_path):
   .chart-sm {{ width: 100%; height: 300px; }}
   select {{ padding: 6px 12px; border: 1px solid #d9dde3; border-radius: 6px; font-size: 13px; background: #fff; }}
   .legend-hint {{ font-size: 12px; color: #86909c; margin-top: 6px; }}
+  .trades {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+  .trades th, .trades td {{ padding: 8px 10px; border-bottom: 1px solid #eef1f4; text-align: left; }}
+  .trades th {{ background: #f7f8fa; color: #4e5969; font-weight: 600; white-space: nowrap; }}
+  .trades tr:hover td {{ background: #fafbfc; }}
+  .buy {{ color: #e8403a; font-weight: 600; }}
+  .sell {{ color: #1ba27a; font-weight: 600; }}
+  .sys-cell {{ font-size: 12px; color: #86909c; max-width: 260px; }}
 </style>
 </head>
 <body>
@@ -181,6 +223,14 @@ def generate_echarts_report(combo, per_stock, output_path):
     <select id="stockSel" style="margin-bottom:12px;"></select>
     <div id="klineChart" class="chart"></div>
     <div class="legend-hint">🟢 三角=买入 &nbsp;🔻 倒三角=卖出 &nbsp;虚线=BOLL下轨</div>
+  </div>
+  <div class="card"><h2>📝 实盘操作记录 (与回测系统对照)</h2>
+    <table class="trades">
+      <thead><tr><th>日期</th><th>代码</th><th>名称</th><th>方向</th><th>价格</th>
+        <th>数量</th><th>金额</th><th>备注</th><th>系统同日操作 (回测)</th></tr></thead>
+      <tbody id="manualTbody"></tbody>
+    </table>
+    <div class="legend-hint">💡 在 config.json trading.manual_trades 填写你的实际操作 (日期/代码/方向/价格/数量), 便于与回测系统决策对照</div>
   </div>
 </div>
 <script>
@@ -276,6 +326,29 @@ const COLOR = {{ up: '#e8403a', down: '#1ba27a', grid: '#eef1f4', text: '#4e5969
   sel.addEventListener('change', e => render(Number(e.target.value)));
   if (DATA.kline_data.length) render(0);
   window.addEventListener('resize', () => chart.resize());
+}})();
+
+// ---- 5. 实盘操作记录表 ----
+(function () {{
+  const tb = document.getElementById('manualTbody');
+  if (!DATA.manual_trades || DATA.manual_trades.length === 0) {{
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="9" style="color:#86909c;text-align:center;padding:16px;">' +
+      '暂无记录 — 在 config.json trading.manual_trades 填写实际操作 (日期/代码/方向/价格/数量)</td>';
+    tb.appendChild(tr);
+    return;
+  }}
+  DATA.manual_trades.forEach(m => {{
+    const tr = document.createElement('tr');
+    const cls = m.side === 'BUY' ? 'buy' : (m.side === 'SELL' ? 'sell' : '');
+    const amount = m.amount ? '¥' + m.amount.toLocaleString() : '';
+    tr.innerHTML =
+      '<td>' + m.date + '</td><td>' + m.code + '</td><td>' + m.name + '</td>' +
+      '<td class="' + cls + '">' + m.side_cn + '</td><td>' + m.price.toFixed(3) + '</td>' +
+      '<td>' + (m.shares || '') + '</td><td>' + amount + '</td><td>' + m.note + '</td>' +
+      '<td class="sys-cell">' + (m.sys || '—') + '</td>';
+    tb.appendChild(tr);
+  }});
 }})();
 </script>
 </body>
