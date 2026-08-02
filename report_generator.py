@@ -509,7 +509,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 </tr>""")
             html_parts.append("""
     </tbody></table>
-    <p style="color:#999;font-size:12px;margin-top:-12px;">本表 = 系统(回测引擎)买卖信号流水 — 信号日触发决策, 执行日 = 按成交模式实际成交日(非延迟模式两者相同, 当前次日尾盘成交则执行日=信号日+1交易日); 用户实际操作流水见自选池轮动分析报告"用户A操作记录"</p>""")
+    <p style="color:#999;font-size:12px;margin-top:-12px;">本表 = 系统(回测引擎)原教旨买卖信号流水 — 按<strong>信号日收盘价即时成交</strong>(信号日=执行日, 价格/盈亏均为信号价口径); 用户A延后1交易日执行的成交流水(执行日=信号日+1交易日)见自选池轮动分析报告"用户A操作记录"</p>""")
 
         # 当前持仓
         if trade_result.get('final_positions'):

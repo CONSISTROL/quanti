@@ -222,7 +222,7 @@ def generate_echarts_report(combo, per_stock, output_path):
         <th>数量</th><th>金额</th><th>盈亏</th><th>信号原因</th></tr></thead>
       <tbody id="userTbody"></tbody>
     </table>
-    <div class="legend-hint">💡 假定用户A忠实执行回测决策: 信号日(T)收盘收到系统决策 → 次日(T+1)尾盘(或开盘)执行; 信号日 = 系统发出买卖信号之日, 与主报告"系统买卖信号记录"同日对照</div>
+    <div class="legend-hint">💡 本表 = 用户A延后执行流水: 信号日(T)收盘收到系统决策 → 次日(T+1)尾盘(或开盘)执行, 价格/盈亏均为<strong>执行口径</strong>(与主报告"系统买卖信号记录"的信号日收盘价即时成交口径不同); 信号日列可与系统信号逐日对照</div>
   </div>
 </div>
 <script>
