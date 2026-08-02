@@ -73,7 +73,27 @@ class WatchlistStrategy(BaseStrategy):
         return score, '+'.join(reasons)
 
     def buy_signal(self, ind, **ctx):
-        """强弱分最高的买入 (引擎按分数排序选最强)"""
+        """强弱分最高的买入 (引擎按分数排序选最强)
+        位置/动能过滤 (不在高位/动能减弱/趋势停滞时买入):
+          1. DIF-DEA较前日上升 (动能增强)
+          2. MA5上行 (趋势确认)
+          3. SKDJ非高位 (K<=65, 不在高位追入)
+        """
+        # 动能: DIF-DEA较前日上升
+        if not ind.get('hist_rise', False):
+            return False, 0, 'DIF-DEA未回升'
+
+        # 趋势: MA5上行
+        ma5 = ind.get('ma5', 0)
+        ma5_prev = ind.get('ma5_prev', 0)
+        if ma5 <= ma5_prev:
+            return False, 0, 'MA5未上行'
+
+        # 位置: SKDJ非高位
+        k = ind.get('skdj_k', 50)
+        if k > 65:
+            return False, 0, f'SKDJ高位(K={k:.0f})'
+
         score, reason = self.strength_score(ind)
         if score >= WATCH_BUY_MIN:
             return True, score, f'强弱分{score}: {reason}'
