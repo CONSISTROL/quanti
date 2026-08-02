@@ -12,12 +12,14 @@ from .reversal import ReversalStrategy
 from .momentum import MomentumStrategy
 from .bollinger import BollingerStrategy
 from .watchlist import WatchlistStrategy
+from .watchlist_weekly import WatchlistWeeklyStrategy
 
 STRATEGIES = {
     'reversal': ReversalStrategy,
     'momentum': MomentumStrategy,
     'bollinger': BollingerStrategy,
     'watchlist': WatchlistStrategy,
+    'watchlist_weekly': WatchlistWeeklyStrategy,
 }
 
 

@@ -476,7 +476,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             today_str = today.strftime('%Y-%m-%d')
 
             for code, sina in pure_to_sina.items():
-                if code in held_codes or code in candidate_set or strategy == 'watchlist':
+                if code in held_codes or code in candidate_set or strategy in ('watchlist', 'watchlist_weekly'):
                     continue  # 自选轮动模式: 只做自选池, 不动态发现
 
                 # 使用预计算数据 (快)
