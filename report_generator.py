@@ -465,7 +465,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 date_nav[pd.Timestamp(d).strftime('%Y-%m-%d')] = v
 
             html_parts.append("""
-    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 操作记录</h2>
+    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 系统买卖信号记录</h2>
     <table style="margin-bottom:20px;">
     <thead><tr>
         <th>日期</th><th>方向</th><th>代码</th><th>名称</th>
@@ -506,7 +506,9 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                     <td>{pos_ratio:.0%}</td>
                     <td>{t.reason}</td>
                 </tr>""")
-            html_parts.append("</tbody></table>")
+            html_parts.append("""
+    </tbody></table>
+    <p style="color:#999;font-size:12px;margin-top:-12px;">本表 = 系统(回测引擎)买卖信号流水 — 信号日触发决策, 按成交模式次日执行; 非用户实际操作记录(用户操作流水见自选池轮动分析报告)</p>""")
 
         # 当前持仓
         if trade_result.get('final_positions'):

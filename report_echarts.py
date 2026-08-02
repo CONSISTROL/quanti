@@ -184,7 +184,7 @@ def generate_echarts_report(combo, per_stock, output_path):
   .trades tr:hover td {{ background: #fafbfc; }}
   .buy {{ color: #e8403a; font-weight: 600; }}
   .sell {{ color: #1ba27a; font-weight: 600; }}
-  .sys-cell {{ font-size: 12px; color: #86909c; max-width: 260px; }}
+  .reason-cell {{ font-size: 12px; color: #86909c; max-width: 260px; }}
 </style>
 </head>
 <body>
@@ -209,7 +209,7 @@ def generate_echarts_report(combo, per_stock, output_path):
   <div class="card"><h2>🏆 总收益对比</h2>
     <div id="barChart" class="chart-sm"></div>
   </div>
-  <div class="card"><h2>🕯️ 个股K线 (含买卖点)</h2>
+  <div class="card"><h2>🕯️ 个股K线 (系统买卖信号点)</h2>
     <select id="stockSel" style="margin-bottom:12px;"></select>
     <div id="klineChart" class="chart"></div>
     <div class="legend-hint">🟢 三角=买入 &nbsp;🔻 倒三角=卖出 &nbsp;虚线=BOLL下轨</div>
@@ -343,7 +343,7 @@ const COLOR = {{ up: '#e8403a', down: '#1ba27a', grid: '#eef1f4', text: '#4e5969
       '<td>' + m.price.toFixed(3) + '</td>' +
       '<td>' + (m.shares || '') + '</td><td>' + amount + '</td>' +
       '<td>' + pnl + '</td>' +
-      '<td class="sys-cell">' + (m.reason || '') + '</td>';
+      '<td class="reason-cell">' + (m.reason || '') + '</td>';
     tb.appendChild(tr);
   }});
 }})();
