@@ -453,8 +453,15 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
             # 按信号强度排序, 买入前 available_slots 个
             buy_candidates.sort(key=lambda x: x[3], reverse=True)
-            for code, name, buy_price, score, reason, entry_type in buy_candidates[:available_slots]:
-                alloc = cash * (calc_kelly_fraction() if kelly_mode else position_pct)
+            picks = buy_candidates[:available_slots]
+            # 动态仓位: 单只上限position_pct, 按强弱分比例缩放 (行情弱→分低→轻仓)
+            # 分散持股时强势标的多配、弱势标的少配, 行情整体弱则自然降仓
+            for code, name, buy_price, score, reason, entry_type in picks:
+                if kelly_mode:
+                    alloc = cash * calc_kelly_fraction()
+                else:
+                    weight = position_pct * min(max(score, 0) / 10.0, 1.0)
+                    alloc = cash * weight
                 if alloc < buy_price * 100:  # 至少买1手
                     continue
                 shares = int(alloc / buy_price / 100) * 100  # 整手
