@@ -598,11 +598,47 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
       allVals.push(vals);
     }
 
-    /* 2. 表格上方状态条 */
+    /* 2. 表格上方状态条 + 下方分页控件 (行数>30自动分页) */
     var bar = document.createElement('div');
     bar.className = 'filter-bar';
     tbl.parentNode.insertBefore(bar, tbl);
-
+    var pageSize = 30, page = 0, pager = null;
+    if (rows.length > 30) {
+      pager = document.createElement('div');
+      pager.className = 'filter-pager';
+      tbl.parentNode.insertBefore(pager, tbl.nextSibling);
+    }
+    function renderRows(visible) {
+      var start = page * pageSize;
+      var end = Math.min(start + pageSize, visible.length);
+      rows.forEach(function (r) { r.style.display = 'none'; });
+      for (var i = start; i < end; i++) visible[i].style.display = '';
+      if (!pager) return;
+      var totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
+      pager.innerHTML = '';
+      var info = document.createElement('span');
+      info.className = 'pager-info';
+      info.textContent = (visible.length === 0 ? 0 : start + 1) + '-' + end
+        + ' / ' + visible.length + ' 行 · 第 ' + (page + 1) + '/' + totalPages + ' 页';
+      pager.appendChild(info);
+      var prev = document.createElement('button');
+      prev.textContent = '‹'; prev.disabled = page <= 0;
+      prev.onclick = function () { page--; apply(); };
+      pager.appendChild(prev);
+      var next = document.createElement('button');
+      next.textContent = '›'; next.disabled = page >= totalPages - 1;
+      next.onclick = function () { page++; apply(); };
+      pager.appendChild(next);
+      var sel = document.createElement('select');
+      [10, 30, 50, 100].forEach(function (s) {
+        var op = document.createElement('option');
+        op.value = s; op.textContent = s + ' 行/页';
+        if (s === pageSize) op.selected = true;
+        sel.appendChild(op);
+      });
+      sel.onchange = function () { pageSize = parseInt(sel.value, 10); page = 0; apply(); };
+      pager.appendChild(sel);
+    }
     function rowShown(r) {
       for (var c2 = 0; c2 < nCols; c2++) {
         var st = states[c2]; if (!st.active) continue;
@@ -621,16 +657,16 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
       return true;
     }
     function apply() {
-      var shown = 0;
-      rows.forEach(function (r) {
-        var ok = rowShown(r);
-        r.style.display = ok ? '' : 'none';
-        if (ok) shown++;
-      });
+      var visible = rows.filter(rowShown);
+      if (pager) {
+        var tp = Math.max(1, Math.ceil(visible.length / pageSize));
+        if (page >= tp) page = tp - 1;
+      }
+      renderRows(visible);
       var act = states.filter(function (s) { return s.active; }).length;
       ths.forEach(function (th, idx) { th.classList.toggle('filter-active', states[idx].active); });
       if (act) {
-        bar.innerHTML = '<span>已筛选 <b>' + shown + '</b> / ' + rows.length + ' 行</span>'
+        bar.innerHTML = '<span>已筛选 <b>' + visible.length + '</b> / ' + rows.length + ' 行</span>'
           + '<span class="filter-clear" title="恢复全部">清除全部筛选</span>';
         bar.style.display = 'flex';
         bar.querySelector('.filter-clear').onclick = function () {
@@ -731,6 +767,9 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
         floatPanel.classList.add('open');
       };
     });
+
+    /* 5. 初始渲染 (分页显示第一页) */
+    apply();
 
     document.addEventListener('click', function (e) {
       if (floatPanel && activeCol != null && !floatPanel.contains(e.target)) closeFloat();
@@ -884,6 +923,18 @@ def _html_head(backtest_date=None):
     padding: 1px 8px; font-size: 11px;
   }}
   .filter-clear:hover {{ background: #fdecea; }}
+  .filter-pager {{
+    display: flex; align-items: center; gap: 8px; margin: 8px 0 4px;
+    font-size: 12px; color: #666;
+  }}
+  .filter-pager button {{
+    min-width: 28px; height: 24px; cursor: pointer; border: 1px solid #c8cdd6;
+    border-radius: 4px; background: #fff; font-size: 12px; color: #333;
+  }}
+  .filter-pager button:disabled {{ opacity: .4; cursor: default; }}
+  .filter-pager button:not(:disabled):hover {{ background: #f0f2f7; }}
+  .filter-pager select {{ font-size: 12px; padding: 2px 4px; border: 1px solid #c8cdd6; border-radius: 4px; }}
+  .pager-info {{ margin-right: 4px; }}
   @media (max-width: 768px) {{
     .charts-grid {{ grid-template-columns: 1fr; }}
     .cards {{ grid-template-columns: repeat(2, 1fr); }}
