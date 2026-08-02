@@ -629,6 +629,25 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
       next.textContent = '›'; next.disabled = page >= totalPages - 1;
       next.onclick = function () { page++; apply(); };
       pager.appendChild(next);
+      var goto = document.createElement('span');
+      goto.className = 'pager-goto';
+      var input = document.createElement('input');
+      input.type = 'number'; input.min = 1; input.max = totalPages;
+      input.value = page + 1; input.title = '跳转到页码 (回车确认)';
+      input.onkeydown = function (e) {
+        if (e.key !== 'Enter') return;
+        var v = parseInt(input.value, 10);
+        if (!isNaN(v)) { page = Math.min(totalPages, Math.max(1, v)) - 1; apply(); }
+      };
+      goto.appendChild(input);
+      var jbtn = document.createElement('button');
+      jbtn.textContent = '跳转';
+      jbtn.onclick = function () {
+        var v = parseInt(input.value, 10);
+        if (!isNaN(v)) { page = Math.min(totalPages, Math.max(1, v)) - 1; apply(); }
+      };
+      goto.appendChild(jbtn);
+      pager.appendChild(goto);
       var sel = document.createElement('select');
       [10, 30, 50, 100].forEach(function (s) {
         var op = document.createElement('option');
@@ -934,6 +953,7 @@ def _html_head(backtest_date=None):
   .filter-pager button:disabled {{ opacity: .4; cursor: default; }}
   .filter-pager button:not(:disabled):hover {{ background: #f0f2f7; }}
   .filter-pager select {{ font-size: 12px; padding: 2px 4px; border: 1px solid #c8cdd6; border-radius: 4px; }}
+  .pager-goto input {{ width: 3.2em; font-size: 12px; padding: 2px 4px; border: 1px solid #c8cdd6; border-radius: 4px; margin-left: 6px; }}
   .pager-info {{ margin-right: 4px; }}
   @media (max-width: 768px) {{
     .charts-grid {{ grid-template-columns: 1fr; }}
