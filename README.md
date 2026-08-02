@@ -219,10 +219,33 @@ Sharpe:     2.30
         "workers": 8,                  // 数据下载并发数
         "include_etf_lof": false,      // 是否纳入ETF/LOF
         "exclude_gem": true,           // 排除创业板(300xxx)
-        "exclude_star": true           // 排除科创板(688xxx)
+        "exclude_star": true,          // 排除科创板(688xxx)
+        "source": "quantdash",         // 数据源: quantdash(推荐) / sina
+        "quantdash_key": ""            // QuantDash API key (或环境变量 QUANTDASH_API_KEY)
     }
 }
 ```
+
+## 数据源 (data_sources/)
+
+数据采集独立成 `data_sources/` 文件夹, 通过 `config.json data.source` 选择, 返回格式统一:
+
+| 数据源 | 个股 | ETF | LOF | 说明 |
+|--------|------|-----|-----|------|
+| **quantdash** (默认) | QuantDash API | QuantDash API | 腾讯 fqkline | 前复权, **正确处理份额折算** |
+| **sina** | 新浪 V8 | 新浪基金 | 腾讯 fqkline | 免费无key, 但ETF**不做份额折算复权** |
+
+**为什么推荐 quantdash**: 旧新浪数据源对 ETF 份额折算(如纳指ETF 2022-03-07 1:4折算)不做复权处理, 价格出现假断层, 导致 SKDJ/MACD 等指标失真、回测结果不可信 (159941 数据修正后组合收益 +62.57% → +153.43%)。
+
+**配置**:
+- `data.source`: `quantdash` / `sina`, 回测自动读取
+- QuantDash API key: 环境变量 `QUANTDASH_API_KEY` 或 `data.quantdash_key` (注册: https://quantdash.net/dashboard)
+- 手动刷新缓存:
+  - `python -m data_sources.quantdash 601857 159941 160723`
+  - `python -m data_sources.sina 601857 159941 160723`
+- 缓存: `cache/quantdash_watchlist_YYYYMMDD.pkl` / `cache/sina_watchlist_YYYYMMDD.pkl` (当日有效, 自动增量)
+
+**限制**: QuantDash 免费版**不支持批量接口** (`klines.batch` 需付费升级), 只能单只串行拉取 (单只上限3000根, 支持日/周线)。自选池5只约8秒 + 当日缓存复用, 实际无感; 全市场扫描 (数千只) 仍需 akshare 数据源 (`main.py`)。
 
 ## 项目结构
 
@@ -244,7 +267,13 @@ Sharpe:     2.30
 │   └── bollinger.py     #   布林线均值回归
 ├── trading_engine.py    # 波段交易引擎 (回测, 按config选择策略)
 ├── indicator_cache.py   # 指标预计算与缓存 (SKDJ/MACD/周线, 秒级加载)
-├── data_fetcher.py      # 数据采集 (AkShare, 缓存)
+├── data_fetcher.py      # 数据采集 (AkShare/新浪, 缓存) — 全市场扫描用
+├── data_sources/        # 数据源注册表 (config data.source 选择)
+│   ├── __init__.py      #   注册表: quantdash(默认)/sina
+│   ├── base.py          #   数据源基类 (统一 fetch_watchlist_data 接口)
+│   ├── quantdash.py     #   QuantDash API (个股/ETF前复权) [推荐]
+│   ├── sina.py          #   新浪V8 + 新浪ETF
+│   └── tencent.py       #   腾讯LOF回退 (两源共用)
 ├── factor_model.py      # 因子计算+打分
 ├── report_generator.py  # HTML报告生成
 ├── backtest.py          # Walk-forward回测框架 + 图表

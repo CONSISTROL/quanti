@@ -6,7 +6,6 @@
 """
 import os
 import sys
-import pickle
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -33,14 +32,18 @@ def main(config=None):
         print('  ✗ config.json 未配置 watchlist')
         return 1
 
-    # ---- 1. 加载数据: 股票 + ETF ----
-    hist = pickle.load(open('cache/hist_batch_20260801.pkl', 'rb'))
-    etf_path = 'cache/watchlist_etf.pkl'
-    if os.path.exists(etf_path):
-        etf = pickle.load(open(etf_path, 'rb'))
-        for k, v in etf.items():
-            hist[k] = v
-        print(f'  ✅ 合并ETF数据: {list(etf.keys())}')
+    # ---- 1. 加载数据: 按 config data.source 选择数据源 ----
+    data_cfg = config.get('data', {})
+    from data_sources import get_data_source, data_source_label
+    source_name = data_cfg.get('source', 'quantdash')
+    ds = get_data_source(source_name)
+    print(f'  数据源: {data_source_label(source_name)}')
+    hist = ds.fetch_watchlist_data(
+        watchlist, cache_dir='cache',
+        use_cache=True, max_bars=data_cfg.get('hist_days', 1200))
+    if not hist:
+        print(f'  ✗ 数据源 {source_name} 拉取失败')
+        return 1
 
     # ---- 2. 预计算指标 (仅自选池) ----
     from data_fetcher import _code_pure
@@ -74,7 +77,7 @@ def main(config=None):
 
     pool_desc = ', '.join(f'{c} {names.get(c, "")}' for c in precomputed)
     print(f'  自选池: {pool_desc}')
-    print(f'  策略: {strategy_label("watchlist")}')
+    print(f'  策略: {strategy_label(config.get("trading", {}).get("strategy", "watchlist"))}')
 
     # ---- 3. 构造scored_df (显示名称) ----
     scored_df = pd.DataFrame([
