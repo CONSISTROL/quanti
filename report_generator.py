@@ -468,7 +468,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 系统买卖信号记录</h2>
     <table style="margin-bottom:20px;">
     <thead><tr>
-        <th>日期</th><th>方向</th><th>代码</th><th>名称</th>
+        <th>信号日</th><th>执行日</th><th>方向</th><th>代码</th><th>名称</th>
         <th>价格</th><th>数量</th><th>金额</th><th>盈亏</th><th>累计</th><th>总市值</th><th>仓位</th><th>原因</th>
     </tr></thead>
     <tbody>""")
@@ -493,6 +493,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 held_val = sum(s * p for s, p in held.values())
                 pos_ratio = held_val / nav if nav > 0 else 0
                 html_parts.append(f"""<tr>
+                    <td>{t.signal_date.strftime('%Y-%m-%d')}</td>
                     <td>{t.date.strftime('%Y-%m-%d')}</td>
                     <td style="{dir_css}">{dir_label}</td>
                     <td><strong>{t.code}</strong></td>
@@ -508,7 +509,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 </tr>""")
             html_parts.append("""
     </tbody></table>
-    <p style="color:#999;font-size:12px;margin-top:-12px;">本表 = 系统(回测引擎)买卖信号流水 — 信号日触发决策, 按成交模式次日执行; 非用户实际操作记录(用户操作流水见自选池轮动分析报告)</p>""")
+    <p style="color:#999;font-size:12px;margin-top:-12px;">本表 = 系统(回测引擎)买卖信号流水 — 信号日触发决策, 执行日 = 按成交模式实际成交日(非延迟模式两者相同, 当前次日尾盘成交则执行日=信号日+1交易日); 用户实际操作流水见自选池轮动分析报告"用户A操作记录"</p>""")
 
         # 当前持仓
         if trade_result.get('final_positions'):

@@ -131,6 +131,8 @@ def generate_echarts_report(combo, per_stock, output_path):
     for t in combo.get('trades', []):
         user_trades.append({
             'date': pd.Timestamp(t.date).strftime('%Y-%m-%d'),
+            'signal_date': (pd.Timestamp(t.signal_date).strftime('%Y-%m-%d')
+                            if getattr(t, 'signal_date', None) is not None else None),
             'code': t.code,
             'name': t.name,
             'side': t.direction,
@@ -209,18 +211,18 @@ def generate_echarts_report(combo, per_stock, output_path):
   <div class="card"><h2>🏆 总收益对比</h2>
     <div id="barChart" class="chart-sm"></div>
   </div>
-  <div class="card"><h2>🕯️ 个股K线 (系统买卖信号点)</h2>
+  <div class="card"><h2>🕯️ 个股K线 (用户A买卖执行点)</h2>
     <select id="stockSel" style="margin-bottom:12px;"></select>
     <div id="klineChart" class="chart"></div>
-    <div class="legend-hint">🟢 三角=买入 &nbsp;🔻 倒三角=卖出 &nbsp;虚线=BOLL下轨</div>
+    <div class="legend-hint">🟢 三角=买入 &nbsp;🔻 倒三角=卖出 &nbsp;标记于执行日/执行价 &nbsp;虚线=BOLL下轨</div>
   </div>
   <div class="card"><h2>🔄 用户A操作记录 (按回测决策延后1交易日执行)</h2>
     <table class="trades">
-      <thead><tr><th>执行日期</th><th>方向</th><th>代码</th><th>名称</th><th>价格</th>
+      <thead><tr><th>信号日</th><th>执行日期</th><th>方向</th><th>代码</th><th>名称</th><th>价格</th>
         <th>数量</th><th>金额</th><th>盈亏</th><th>信号原因</th></tr></thead>
       <tbody id="userTbody"></tbody>
     </table>
-    <div class="legend-hint">💡 假定用户A忠实执行回测决策: 信号日收盘收到决策 → 次日尾盘(或开盘)执行; 本表 = 回测交易流水自动生成, 无需手动填写</div>
+    <div class="legend-hint">💡 假定用户A忠实执行回测决策: 信号日(T)收盘收到系统决策 → 次日(T+1)尾盘(或开盘)执行; 信号日 = 系统发出买卖信号之日, 与主报告"系统买卖信号记录"同日对照</div>
   </div>
 </div>
 <script>
@@ -323,7 +325,7 @@ const COLOR = {{ up: '#e8403a', down: '#1ba27a', grid: '#eef1f4', text: '#4e5969
   const tb = document.getElementById('userTbody');
   if (!DATA.user_trades || DATA.user_trades.length === 0) {{
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="9" style="color:#86909c;text-align:center;padding:16px;">暂无交易记录</td>';
+    tr.innerHTML = '<td colspan="10" style="color:#86909c;text-align:center;padding:16px;">暂无交易记录</td>';
     tb.appendChild(tr);
     return;
   }}
@@ -337,6 +339,7 @@ const COLOR = {{ up: '#e8403a', down: '#1ba27a', grid: '#eef1f4', text: '#4e5969
       pnl = '<span class="' + pcls + '">' + (m.pnl >= 0 ? '+' : '') + m.pnl.toFixed(2) + '%</span>';
     }}
     tr.innerHTML =
+      '<td>' + (m.signal_date || '—') + '</td>' +
       '<td>' + m.date + '</td>' +
       '<td class="' + cls + '">' + m.side_cn + '</td>' +
       '<td>' + m.code + '</td><td>' + m.name + '</td>' +

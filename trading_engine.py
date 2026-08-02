@@ -166,16 +166,17 @@ class Position:
 
 class TradeRecord:
     """交易记录"""
-    def __init__(self, code, name, direction, price, date, shares, amount, reason, pnl_pct=0):
+    def __init__(self, code, name, direction, price, date, shares, amount, reason, pnl_pct=0, signal_date=None):
         self.code = code
         self.name = name
         self.direction = direction  # 'BUY' or 'SELL'
         self.price = price
-        self.date = date
+        self.date = date            # 执行日 (非延迟成交模式 == 信号日)
         self.shares = shares
         self.amount = amount
         self.reason = reason
         self.pnl_pct = pnl_pct  # 卖出时的盈亏比例
+        self.signal_date = signal_date or date  # 信号日 (exec模式: T日信号, T+1执行 → 两日分离)
 
 
 def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-01',
@@ -337,9 +338,9 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     exec_next_open = config.get('exec_next_open', False)
     buy_next_open = config.get('buy_next_open', False)
     exec_next_close = config.get('exec_next_close', False)
-    pending_sells = []    # [(pos, reason)] — T日收盘卖出信号 → T+1开盘执行
-    pending_reduces = []  # [(pos, reason, ratio)] — T日收盘减仓信号 → T+1开盘执行
-    pending_buys = []     # [(code, name, score, reason, entry_type)] — T日收盘买入信号 → T+1开盘执行
+    pending_sells = []    # [(pos, reason, sig_date)] — T日收盘卖出信号 → T+1开盘执行
+    pending_reduces = []  # [(pos, reason, ratio, sig_date)] — T日收盘减仓信号 → T+1开盘执行
+    pending_buys = []     # [(code, name, score, reason, entry_type, sig_date)] — T日收盘买入信号 → T+1开盘执行
 
     # 降频机制 (减少信号翻转交易, 默认关闭):
     # min_holding_days: 最短持有天数 — 持有不足N天时忽略技术性卖出(死叉/趋势转弱), 止损-5%始终有效
@@ -361,8 +362,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         # ---- 0b. 执行昨日挂起的信号 (次日成交, 先卖后买) ----
         # exec_next_open:  T+1开盘价成交 / exec_next_close: T+1尾盘(收盘价)成交
         if pending_sells or pending_reduces or pending_buys:
-            need_codes = ({p.code for p, _ in pending_sells}
-                          | {p.code for p, _, _ in pending_reduces}
+            need_codes = ({p.code for p, _, _ in pending_sells}
+                          | {p.code for p, _, _, _ in pending_reduces}
                           | {c for c, *_ in pending_buys})
             opens = {}
             px_col = 'close' if exec_next_close else 'open'
@@ -383,13 +384,14 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 return p if p is not None and p > 0 else fallback
 
             # 先卖出/减仓 (释放现金)
-            for pos, reason in pending_sells:
+            for pos, reason, sig_date in pending_sells:
                 px = _px(pos.code, pos.entry_price)
                 pnl_pct = pos.pnl(px)
                 amount = pos.shares * px
                 cash += amount
                 trades.append(TradeRecord(pos.code, pos.name, 'SELL', px, today,
-                                          pos.shares, amount, reason, pnl_pct))
+                                          pos.shares, amount, reason, pnl_pct,
+                                          signal_date=sig_date))
                 positions.remove(pos)
                 max_profit_tracker.pop(pos.code, None)
                 death_streak.pop(pos.code, None)
@@ -399,14 +401,14 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                         kelly_wins.append(pnl_pct)
                     else:
                         kelly_losses.append(pnl_pct)
-            for pos, reason, ratio in pending_reduces:
+            for pos, reason, ratio, sig_date in pending_reduces:
                 px = _px(pos.code, pos.entry_price)
                 reduce_shares = int(pos.shares * ratio / 100) * 100
                 if 100 <= reduce_shares < pos.shares:
                     cash += reduce_shares * px
                     trades.append(TradeRecord(pos.code, pos.name, 'SELL', px, today,
                                               reduce_shares, reduce_shares * px,
-                                              reason, pos.pnl(px)))
+                                              reason, pos.pnl(px), signal_date=sig_date))
                     pos.shares -= reduce_shares
                     if kelly_mode:
                         if pos.pnl(px) > 0:
@@ -415,7 +417,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                             kelly_losses.append(pos.pnl(px))
             # 再买入 (当日开盘价)
             avail = max_positions - len(positions)
-            for code, name, score, reason, entry_type in pending_buys:
+            for code, name, score, reason, entry_type, sig_date in pending_buys:
                 if code in sold_today or avail <= 0:
                     continue
                 px = opens.get(code)
@@ -433,7 +435,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                             cash += pos.shares * hp
                             trades.append(TradeRecord(pos.code, pos.name, 'SELL', hp, today,
                                                       pos.shares, pos.shares * hp, '高位换仓(K>75)',
-                                                      pos.pnl(hp)))
+                                                      pos.pnl(hp), signal_date=sig_date))
                             positions.remove(pos)
                             max_profit_tracker.pop(pos.code, None)
                             death_streak.pop(pos.code, None)
@@ -456,7 +458,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 amount = shares * px
                 cash -= amount
                 positions.append(Position(code, name, px, today, shares, amount, entry_type))
-                trades.append(TradeRecord(code, name, 'BUY', px, today, shares, amount, reason))
+                trades.append(TradeRecord(code, name, 'BUY', px, today, shares, amount, reason,
+                                          signal_date=sig_date))
                 avail -= 1
             pending_sells.clear()
             pending_reduces.clear()
@@ -524,7 +527,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 is_reduce, ratio = reduce_fn(ind, pos.entry_price)
                 if is_reduce and 0 < ratio < 1:
                     if exec_next_open or exec_next_close:
-                        pending_reduces.append((pos, f'高位减仓{ratio:.0%}', ratio))
+                        pending_reduces.append((pos, f'高位减仓{ratio:.0%}', ratio, today))
                     else:
                         reduce_shares = int(pos.shares * ratio / 100) * 100
                         if reduce_shares >= 100 and reduce_shares < pos.shares:
@@ -564,7 +567,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         # 执行卖出 (清仓)
         if exec_next_open or exec_next_close:
             for pos, sell_price, reason in to_sell:
-                pending_sells.append((pos, reason))
+                pending_sells.append((pos, reason, today))
             to_sell = []
         for pos, sell_price, reason in to_sell:
             pnl_pct = pos.pnl(sell_price)
@@ -698,7 +701,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             if exec_next_open or buy_next_open or exec_next_close:
                 # 次日成交模式: 买入信号挂起, 次日成交价执行 (见第0b步)
                 for code, name, buy_price, score, reason, entry_type in picks:
-                    pending_buys.append((code, name, score, reason, entry_type))
+                    pending_buys.append((code, name, score, reason, entry_type, today))
                 picks = []
             for code, name, buy_price, score, reason, entry_type in picks:
                 # 加仓: 已持仓且低位 (补足到单只上限)
@@ -816,7 +819,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
             for code, name, buy_price, score, reason in wildcard_candidates[:available_slots]:
                 if exec_next_open or buy_next_open or exec_next_close:
-                    pending_buys.append((code, name, score, reason, 'swing'))
+                    pending_buys.append((code, name, score, reason, 'swing', today))
                     continue
                 alloc = cash * (calc_kelly_fraction() if kelly_mode else position_pct)
                 if alloc < buy_price * 100:
