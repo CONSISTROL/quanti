@@ -56,6 +56,22 @@ def compute_indicators(closes, volumes=None, highs=None, lows=None):
     ind['dea'] = dea[-1] if len(dea) > 0 and not np.isnan(dea[-1]) else 0
     ind['macd_hist'] = (ind['dif'] - ind['dea']) * 2
 
+    # 动能窗口flags (与 indicator_cache 定义一致, 供 buy_signal 判断)
+    # hist_rise: 当日MACD柱较前一日上升 (DIF-DEA回升)
+    if len(dif) >= 2 and len(dea) >= 2 and not any(
+            np.isnan(x) for x in (dif[-2], dea[-2], dif[-1], dea[-1])):
+        ind['hist_rise'] = bool((dif[-1] - dea[-1]) > (dif[-2] - dea[-2]))
+    else:
+        ind['hist_rise'] = False
+    # macd_gold_win: 近3天(含当天)内 DIF>DEA (金叉状态)
+    gold = False
+    for lag in range(min(3, len(dif), len(dea))):
+        if not any(np.isnan(x) for x in (dif[-1 - lag], dea[-1 - lag])):
+            if dif[-1 - lag] > dea[-1 - lag]:
+                gold = True
+                break
+    ind['macd_gold_win'] = gold
+
     # MACD金叉/死叉 (最近3天)
     ind['macd_cross'] = 0
     if len(valid_dif) >= 4 and len(dea) >= 4:

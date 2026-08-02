@@ -171,6 +171,28 @@ def main(config=None):
         else:
             print('\n  当前无持仓 (空仓等待买入信号, 无卖出触发价)')
 
+        # ---- 5.6 次日操作计划 (提前一天: 卖出/切标) ----
+        from strategies import get_strategy
+        strat = get_strategy(config.get('trading', {}).get('strategy', 'watchlist'))
+        from trading_engine import Position
+        # 持仓来源: config trading.positions 指定真实持仓优先, 否则用回测最终持仓
+        pos_cfg = config.get('trading', {}).get('positions', [])
+        plan_positions = result.get('final_positions', [])
+        plan_source = '回测模拟持仓'
+        if pos_cfg:
+            last_td = max(max(pd_.keys()) for pd_ in precomputed.values())
+            plan_positions = []
+            for pc in pos_cfg:
+                cc = str(pc.get('code', '')).zfill(6)
+                plan_positions.append(Position(
+                    cc, names.get(cc, ''), float(pc.get('entry', 0)),
+                    pd.Timestamp(last_td), 0, 0, 'manual'))
+            plan_source = 'config trading.positions 真实持仓'
+        from daily_plan import build_nextday_plan, print_nextday_plan
+        plan = build_nextday_plan(hist, precomputed, names, config, strat, scored_df, plan_positions)
+        print(f'\n  (持仓来源: {plan_source})')
+        print_nextday_plan(plan)
+
         # ---- 6. ECharts可视化报告 (净值对比+收益柱状+K线含买卖点) ----
         sina_map = {_code_pure(k): k for k in hist}
         try:
