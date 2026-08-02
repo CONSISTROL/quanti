@@ -205,6 +205,11 @@ class 策略名(BaseStrategy):
 > - **切标/买入候选**（卖出后买谁）：按引擎同款打分（含龙头TOP10/优先级加分）排序，并预计算每个候选的**次日买入触发价**——可能在上方（收盘≥P 追涨触发）也可能在下方（收盘≤P 超跌触发），已满足条件的直接标 ✅ 明日开盘即可买。
 > - **真实持仓覆盖**：手动交易与模拟有偏差时，在 config `trading.positions` 指定真实持仓（`[{"code": "159941", "entry": 1.574}]`），计划按你的实际持仓给卖出策略，否则用回测最终持仓。
 
+> 🚨 **收盘前检查（15:57 实时价 → 买卖信号 → 飞书推送）**：`python close_check.py --wait` 自动等到交易日 15:57 拉取腾讯实时行情，用最新价≈今日收盘价重算完整技术指标，判定今日买卖信号，**有信号才推送飞书**（`config.json alert.feishu_webhook`）：
+> - **卖出信号**：持仓（`trading.positions` 真实持仓）触发止损/跌破MA20/高位死叉 → "⛔ 明日开盘优先卖出"
+> - **买入信号**：非持仓候选 buy_signal+引擎加分 ≥ min_buy_score（复刻引擎）→ "✅ 明日开盘可买入"
+> - 15:57 最新价≈收盘价但尾盘仍有波动，推送后请人工确认尾盘价格再执行次日操作；`--dry-run` 只打印不推送，无信号不推送（可配合 Windows 任务计划程序每天 15:57 运行）。
+
 **回测示例（中国石油 601857，2025-01-01 ~ 2026-07-27）**：
 
 ```
@@ -265,6 +270,9 @@ Sharpe:     2.30
         "exclude_star": true,          // 排除科创板(688xxx)
         "source": "quantdash",         // 数据源: quantdash(推荐) / sina
         "quantdash_key": ""            // QuantDash API key (或环境变量 QUANTDASH_API_KEY)
+    },
+    "alert": {
+        "feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"  // 飞书机器人webhook (收盘检查推送)
     }
 }
 ```
@@ -324,6 +332,9 @@ Sharpe:     2.30
 ├── backtest.py          # Walk-forward回测框架 + 图表
 ├── optimizer.py         # 参数优化 (--optimize)
 ├── price_targets.py     # 买卖参考价
+├── close_check.py       # 收盘前检查 (15:57实时价→买卖信号→飞书推送)
+├── sell_price_forecast.py # 次日买卖触发价预测 (网格模拟临界价)
+├── daily_plan.py        # 次日操作计划 (卖出触发价+切标候选)
 ├── run_20_stocks.py     # 批量回测TOP20股票 (实验工具)
 ├── strategy_ref.py      # 参考策略信号验证 (实验工具)
 ├── grid_search_ref.py   # 参考策略参数搜索 (实验工具)
