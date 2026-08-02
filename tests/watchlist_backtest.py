@@ -132,8 +132,46 @@ def main(config=None):
                   f"{st['annual_return']:>+8.2%} {st['sharpe']:>7.2f} "
                   f"{st['max_drawdown']:>8.1%} {st['total_trades']:>4d} {st['win_rate']:>6.0%}")
 
-        # ---- 6. ECharts可视化报告 (净值对比+收益柱状+K线含买卖点) ----
+        # ---- 5.5 次日卖出触发价 (当前持仓, 真实场景次日早盘操作) ----
+        final_positions = result.get('final_positions', [])
         from data_fetcher import _code_pure
+        sina_map = {_code_pure(k): k for k in hist}
+        if final_positions:
+            from sell_price_forecast import next_sell_prices
+            from strategies import get_strategy
+            strat = get_strategy(config.get('trading', {}).get('strategy', 'watchlist'))
+            print('\n' + '═' * 90)
+            print('  📉 次日卖出触发价 (今日收盘后评估, 明日收盘价达到即触发卖出)')
+            print('═' * 90)
+            for pos in final_positions:
+                sina = sina_map.get(pos.code)
+                if not sina:
+                    continue
+                fp = next_sell_prices(hist[sina], pos.entry_price, strat)
+                pnl = (fp['现价'] / pos.entry_price - 1) if pos.entry_price > 0 else 0
+                print(f"\n  {pos.code} {names.get(pos.code, '')}  成本 {pos.entry_price:.3f}  "
+                      f"现价 {fp['现价']:.3f}  ({pnl:+.1%})")
+                if fp['趋势价'] is not None:
+                    print(f"    ⚠ 趋势转弱  : 明日收盘 ≤ {fp['趋势价']:.3f} → 卖出 (跌破MA20且MA5<MA20)")
+                print(f"    ⚠ 止损线    : 明日收盘 ≤ {fp['止损价']:.3f} → 卖出 (成本-5%)")
+                if fp['死叉价'] is not None:
+                    print(f"    ⚠ SKDJ死叉  : 明日收盘 ≥ {fp['死叉价']:.3f} → 卖出 (高位K>70死叉)")
+                near = False
+                if fp['安全低'] is not None and fp['安全低'] > fp['现价']:
+                    print(f"    🚨 当前价已处于卖出临界下方 → 明日开盘建议优先卖出")
+                    near = True
+                if fp['安全高'] is not None and fp['安全高'] < fp['现价']:
+                    print(f"    🚨 已临近SKDJ高位死叉临界 → 明日冲高即卖")
+                    near = True
+                if not near:
+                    if fp['安全高'] is not None:
+                        print(f"    ✅ 持有区间  : 明日收盘在 {fp['安全低']:.3f} ~ {fp['安全高']:.3f} 之间 → 继续持有")
+                    else:
+                        print(f"    ✅ 持有区间  : 明日收盘 > {fp['安全低']:.3f} → 继续持有")
+        else:
+            print('\n  当前无持仓 (空仓等待买入信号, 无卖出触发价)')
+
+        # ---- 6. ECharts可视化报告 (净值对比+收益柱状+K线含买卖点) ----
         sina_map = {_code_pure(k): k for k in hist}
         try:
             from report_echarts import generate_echarts_report
