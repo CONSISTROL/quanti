@@ -84,7 +84,7 @@ def main(config=None):
 
     # ---- 4. 回测 ----
     tr_cfg = dict(config['trading'])
-    tr_cfg['strategy'] = 'watchlist'
+    tr_cfg['strategy'] = tr_cfg.get('strategy', 'watchlist')  # 用config策略 (watchlist/watchlist_weekly)
     tr_cfg['watchlist'] = list(precomputed.keys())
     tr_cfg['max_positions'] = 1
     tr_cfg['position_pct'] = 1.0
