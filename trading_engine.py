@@ -163,7 +163,7 @@ class TradeRecord:
 
 
 def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-01',
-                       end_date_str='2026-07-27', precomputed=None):
+                       end_date_str='2026-07-27', precomputed=None, market_df=None):
     """
     波段交易回测引擎
 
@@ -203,6 +203,28 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
     start_date = pd.Timestamp(start_date_str)
     end_date = pd.Timestamp(end_date_str)
+
+    # ---- 市场环境过滤 (market_filter) ----
+    # market_df: 指数K线 (date/close), 指数收盘 < 指数MA20 时禁买 (持仓照旧)
+    market_ok_cache = {}
+    market_filter = config.get('market_filter', False)
+    market_ma = int(config.get('market_ma', 20))
+    if market_filter and market_df is not None and len(market_df) > market_ma:
+        m_dates = pd.to_datetime(market_df['date']).values
+        m_close = market_df['close'].values.astype(float)
+        m_ma = pd.Series(m_close).rolling(market_ma).mean().values
+
+        def market_allows(today):
+            mask = m_dates <= np.datetime64(today)
+            n = int(mask.sum())
+            if n < market_ma:
+                return True  # 指数数据不足, 不限制
+            return bool(m_close[n - 1] >= m_ma[n - 1])
+
+        market_ok_cache = market_allows
+        print(f"  市场过滤: 上证指数 < MA{market_ma} 时禁买")
+    else:
+        market_ok_cache = lambda today: True
 
     # ---- 准备数据 ----
     # 构建 pure_code → sina_code 映射
@@ -400,7 +422,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
         # ---- 2. 扫描买入信号 (含低位加仓 + 无现金卖高换低) ----
         available_slots = max_positions - len(positions)
-        if available_slots > 0 and cash > initial_capital * 0.05:
+        if (available_slots > 0 and cash > initial_capital * 0.05
+                and market_ok_cache(today)):
             buy_candidates = []
             held_codes = {p.code for p in positions}
             add_fn = getattr(strat, 'add_position_signal', None)
