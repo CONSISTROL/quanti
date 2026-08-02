@@ -85,12 +85,15 @@ def _ohlc_and_ma(df, precomputed, code):
     return ohlc, ma5, ma20, boll
 
 
-def generate_echarts_report(combo, per_stock, output_path, manual_trades=None):
+def generate_echarts_report(combo, per_stock, output_path):
     """
     combo: dict(eq=[(date,value)], initial, stats, trades, name='组合轮动')
     per_stock: {code: dict(name, eq, initial, trades, df, precomputed)}
-    manual_trades: 实盘操作记录 (config trading.manual_trades):
-        [{"date": "2026-08-04", "code": "159941", "side": "BUY", "price": 1.45, "shares": 10000, "note": ""}]
+
+    操作记录表 = 回测 trades 流水 (用户A忠实执行视角):
+      回测引擎在 exec_next_close/exec_next_open 模式下, trades 的 date 已是
+      "信号日+1交易日"的执行日、price 已是执行价 → 即"按回测结果延后1个
+      交易日执行"的用户A操作记录, 无需手动填写.
     """
     # ---- 1. 净值对比数据 ----
     # 统一日期轴 = 组合的完整日期; 每只个股按日期对齐 (上市前缺失位置填null)
@@ -122,43 +125,30 @@ def generate_echarts_report(combo, per_stock, output_path, manual_trades=None):
         kline_data.append({'code': code, 'name': ps['name'], 'ohlc': ohlc,
                            'ma5': ma5, 'ma20': ma20, 'boll': boll, 'buys': buys, 'sells': sells})
 
-    # ---- 4. 实盘操作记录 (config manual_trades, 与回测系统同日操作对照) ----
-    stock_names = {code: ps['name'] for code, ps in per_stock.items()}
-    sys_map = {}  # date → [(方向, code, price, reason)]
+    # ---- 4. 用户A操作记录 = 回测trades流水 (忠实执行, 延后1交易日) ----
+    # exec_next_close 模式下 trades.date 已是执行日(T+1尾盘), price 已是执行价
+    user_trades = []
     for t in combo.get('trades', []):
-        d = pd.Timestamp(t.date).strftime('%Y-%m-%d')
-        sys_map.setdefault(d, []).append(t)
-
-    manual = []
-    for mt in (manual_trades or []):
-        cc = str(mt.get('code', '')).zfill(6)
-        side = str(mt.get('side', '')).upper()
-        price = float(mt.get('price', 0))
-        shares = int(mt.get('shares', 0))
-        date_str = str(mt.get('date', ''))[:10]
-        sys_ops = sys_map.get(date_str, [])
-        sys_text = '; '.join(
-            f"{'买' if t.direction == 'BUY' else '卖'} {t.code} @{t.price:.3f} ({t.reason})"
-            for t in sys_ops)
-        manual.append({
-            'date': date_str,
-            'code': cc,
-            'name': stock_names.get(cc, cc),
-            'side': side,
-            'side_cn': '买入' if side == 'BUY' else ('卖出' if side == 'SELL' else side),
-            'price': round(price, 3),
-            'shares': shares,
-            'amount': round(price * shares, 2),
-            'note': str(mt.get('note', '')),
-            'sys': sys_text,
+        user_trades.append({
+            'date': pd.Timestamp(t.date).strftime('%Y-%m-%d'),
+            'code': t.code,
+            'name': t.name,
+            'side': t.direction,
+            'side_cn': '买入' if t.direction == 'BUY' else '卖出',
+            'price': round(t.price, 3),
+            'shares': t.shares,
+            'amount': round(t.amount, 2),
+            'reason': t.reason,
+            'pnl': (round(t.pnl_pct * 100, 2) if t.direction == 'SELL'
+                    and getattr(t, 'pnl_pct', 0) is not None else None),
         })
-    manual.sort(key=lambda x: x['date'])
+    user_trades.sort(key=lambda x: x['date'])
 
     payload = {
         'nav_series': nav_series,
         'bar_data': bar_data,
         'kline_data': kline_data,
-        'manual_trades': manual,
+        'user_trades': user_trades,
         'stats': {k: (round(v * 100, 2) if isinstance(v, float) and k in ('total_return', 'annual_return', 'max_drawdown', 'win_rate') else v)
                   for k, v in combo['stats'].items()},
         'initial': combo['initial'],
@@ -224,13 +214,13 @@ def generate_echarts_report(combo, per_stock, output_path, manual_trades=None):
     <div id="klineChart" class="chart"></div>
     <div class="legend-hint">🟢 三角=买入 &nbsp;🔻 倒三角=卖出 &nbsp;虚线=BOLL下轨</div>
   </div>
-  <div class="card"><h2>📝 实盘操作记录 (与回测系统对照)</h2>
+  <div class="card"><h2>🔄 用户A操作记录 (按回测决策延后1交易日执行)</h2>
     <table class="trades">
-      <thead><tr><th>日期</th><th>代码</th><th>名称</th><th>方向</th><th>价格</th>
-        <th>数量</th><th>金额</th><th>备注</th><th>系统同日操作 (回测)</th></tr></thead>
-      <tbody id="manualTbody"></tbody>
+      <thead><tr><th>执行日期</th><th>方向</th><th>代码</th><th>名称</th><th>价格</th>
+        <th>数量</th><th>金额</th><th>盈亏</th><th>信号原因</th></tr></thead>
+      <tbody id="userTbody"></tbody>
     </table>
-    <div class="legend-hint">💡 在 config.json trading.manual_trades 填写你的实际操作 (日期/代码/方向/价格/数量), 便于与回测系统决策对照</div>
+    <div class="legend-hint">💡 假定用户A忠实执行回测决策: 信号日收盘收到决策 → 次日尾盘(或开盘)执行; 本表 = 回测交易流水自动生成, 无需手动填写</div>
   </div>
 </div>
 <script>
@@ -328,25 +318,32 @@ const COLOR = {{ up: '#e8403a', down: '#1ba27a', grid: '#eef1f4', text: '#4e5969
   window.addEventListener('resize', () => chart.resize());
 }})();
 
-// ---- 5. 实盘操作记录表 ----
+// ---- 5. 用户A操作记录表 (回测trades流水) ----
 (function () {{
-  const tb = document.getElementById('manualTbody');
-  if (!DATA.manual_trades || DATA.manual_trades.length === 0) {{
+  const tb = document.getElementById('userTbody');
+  if (!DATA.user_trades || DATA.user_trades.length === 0) {{
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td colspan="9" style="color:#86909c;text-align:center;padding:16px;">' +
-      '暂无记录 — 在 config.json trading.manual_trades 填写实际操作 (日期/代码/方向/价格/数量)</td>';
+    tr.innerHTML = '<td colspan="9" style="color:#86909c;text-align:center;padding:16px;">暂无交易记录</td>';
     tb.appendChild(tr);
     return;
   }}
-  DATA.manual_trades.forEach(m => {{
+  DATA.user_trades.forEach(m => {{
     const tr = document.createElement('tr');
-    const cls = m.side === 'BUY' ? 'buy' : (m.side === 'SELL' ? 'sell' : '');
+    const cls = m.side === 'BUY' ? 'buy' : 'sell';
     const amount = m.amount ? '¥' + m.amount.toLocaleString() : '';
+    let pnl = '';
+    if (m.pnl !== null && m.pnl !== undefined) {{
+      const pcls = m.pnl >= 0 ? 'buy' : 'sell';
+      pnl = '<span class="' + pcls + '">' + (m.pnl >= 0 ? '+' : '') + m.pnl.toFixed(2) + '%</span>';
+    }}
     tr.innerHTML =
-      '<td>' + m.date + '</td><td>' + m.code + '</td><td>' + m.name + '</td>' +
-      '<td class="' + cls + '">' + m.side_cn + '</td><td>' + m.price.toFixed(3) + '</td>' +
-      '<td>' + (m.shares || '') + '</td><td>' + amount + '</td><td>' + m.note + '</td>' +
-      '<td class="sys-cell">' + (m.sys || '—') + '</td>';
+      '<td>' + m.date + '</td>' +
+      '<td class="' + cls + '">' + m.side_cn + '</td>' +
+      '<td>' + m.code + '</td><td>' + m.name + '</td>' +
+      '<td>' + m.price.toFixed(3) + '</td>' +
+      '<td>' + (m.shares || '') + '</td><td>' + amount + '</td>' +
+      '<td>' + pnl + '</td>' +
+      '<td class="sys-cell">' + (m.reason || '') + '</td>';
     tb.appendChild(tr);
   }});
 }})();

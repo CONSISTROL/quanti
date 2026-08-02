@@ -122,8 +122,8 @@ python run_test.py --module watchlist_backtest
 - 自选池：`config.json` 的 `watchlist` 字段（股票/ETF/LOF 混合）
 - 数据源：按 `data.source`（quantdash 默认，前复权含份额折算）
 - 规则：单持仓 100% 满仓轮动，强弱评分卖弱买强（`full_position: true` 时不做强弱分缩放）
-- 输出：组合总收益 + 每只个股独立回测 + ECharts 报告（净值对比/买卖点K线/实盘操作对照表）
-- 实盘对照：在 config `trading.manual_trades` 记录你的实际操作（日期/代码/方向/价格/数量/备注），ECharts 报告底部"📝 实盘操作记录"表逐行对照系统回测同日操作（含信号原因），方便核对你是否按系统决策执行
+- 输出：组合总收益 + 每只个股独立回测 + ECharts 报告（净值对比/买卖点K线/用户A操作记录）
+- 用户A操作记录：报告底部"🔄 用户A操作记录"表 = 回测交易流水自动生成——假定用户A**忠实执行回测决策、延后1个交易日执行**（信号日收盘收到决策 → 次日尾盘/开盘执行），表内每行显示执行日期、方向、价格、数量、盈亏与信号原因，无需手动填写（`exec_next_close` 模式下执行日/价格即回测 trades 的口径）
 
 ## 策略架构（strategies/ 注册表）
 
@@ -249,7 +249,6 @@ Sharpe:     2.30
         "min_holding_days": 0,          // 最短持有天数: 期内忽略技术性卖出(死叉/趋势), 止损-5%始终有效 (实测砍收益, 慎用)
         "death_cross_confirm": 0,       // SKDJ高位死叉连续N天确认才卖 (默认0=关; 实测2天收益-400pt)
         "positions": [],                // 真实持仓覆盖(次日操作计划用): [{"code": "159941", "entry": 1.574}]
-        "manual_trades": [],            // 实盘操作记录(HTML报告对照表用): [{"date": "2026-07-31", "code": "159941", "side": "SELL", "price": 1.574, "shares": 50000, "note": "尾盘卖出"}]
         "stop_loss": -0.03,             // 止损线
         "take_profit": 0.08,            // 止盈线
         "max_holding_days": 0,          // 最大持有天数（0=不限制）

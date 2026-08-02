@@ -218,8 +218,7 @@ def main(config=None):
                     'precomputed': precomputed,
                 }
             echarts_path = f'report_watchlist_echarts_{datetime.now().strftime("%Y%m%d")}.html'
-            generate_echarts_report(combo, per, echarts_path,
-                                    manual_trades=config.get('trading', {}).get('manual_trades', []))
+            generate_echarts_report(combo, per, echarts_path)
             print(f'\n  ✅ ECharts报告: {os.path.abspath(echarts_path)}')
         except Exception as e:
             import traceback
