@@ -206,6 +206,7 @@ def generate_echarts_report(combo, per_stock, output_path):
     <div class="stat"><div class="v">{payload['stats'].get('annual_return', 0):+.1f}%</div><div class="l">年化收益</div></div>
     <div class="stat"><div class="v">{payload['stats'].get('sharpe', 0):.2f}</div><div class="l">Sharpe</div></div>
     <div class="stat"><div class="v" style="color:#ff5b5b;">{payload['stats'].get('max_drawdown', 0):.1f}%</div><div class="l">最大回撤</div></div>
+    <div class="stat"><div class="v" style="color:#ff5b5b;">{payload['stats'].get('max_drawdown_days', 0)}</div><div class="l">最大回撤天数</div></div>
     <div class="stat"><div class="v">{payload['stats'].get('total_trades', 0)}</div><div class="l">交易次数</div></div>
     <div class="stat"><div class="v">{payload['stats'].get('win_rate', 0):.1f}%</div><div class="l">胜率</div></div>
     <div class="stat"><div class="v">{payload['stats'].get('profit_loss_ratio', 0):.2f}</div><div class="l">盈亏比</div></div>

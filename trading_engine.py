@@ -919,8 +919,9 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         # 卖出清仓 — 份额与执行账户不同, 但信号序列一致 (交易次数对得上)
         s_cash = float(initial_capital)
         s_held = {}  # {code: shares}
+        s_peak = {}  # {code: (peak_close, peak_day_idx)} — 持仓期间最高收盘价及日期
         sig_last_close = {}  # {code: 最近有效收盘价} — 缺失日期(停牌/未上市)前向填充
-        for day in trading_dates:
+        for day_idx, day in enumerate(trading_dates):
             ds = day.strftime('%Y-%m-%d')
             day_trades = trades_by_day.get(ds, [])
             # 先卖 (清仓, 含高位减仓等部分卖出信号 — 信号账户视作转弱清仓)
@@ -931,8 +932,15 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 if sig_px is None:
                     sig_px = t.price
                 held_shares = s_held.get(t.code, 0)
+                # 回撤天数 = 持仓期间最高收盘价日 → 卖出信号日的交易日数 (卖出日创新高则0)
+                pk = s_peak.get(t.code)
+                if pk is None or sig_px >= pk[0]:
+                    t.drawdown_days = 0
+                else:
+                    t.drawdown_days = max(0, day_idx - pk[1])
                 s_cash += held_shares * sig_px
                 s_held.pop(t.code, None)
+                s_peak.pop(t.code, None)
                 t.signal_shares = held_shares  # 信号账户实际卖出份额
             # 后买 (满仓, 同日多笔等分现金)
             buys = [t for t in day_trades if t.direction == 'BUY']
@@ -949,12 +957,17 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     if shares > 0:
                         s_cash -= shares * sig_px
                         s_held[t.code] = s_held.get(t.code, 0) + shares
+                        s_peak[t.code] = (sig_px, day_idx)  # 持仓峰值起点 = 买入信号价
                     t.signal_shares = shares
+            # 当日估值 + 持仓峰值更新
             mv = 0
             for cd, sh in s_held.items():
                 c = sig_closes.get(cd, {}).get(ds)
                 if c is not None:
                     sig_last_close[cd] = c
+                    pk = s_peak.get(cd)
+                    if pk is None or c >= pk[0]:
+                        s_peak[cd] = (c, day_idx)
                 mv += sh * sig_last_close.get(cd, 0)
             signal_curve.append((day, s_cash + mv))
     else:
@@ -991,9 +1004,18 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         peaks = np.maximum.accumulate(values)
         drawdowns = (peaks - values) / peaks
         max_drawdown = np.max(drawdowns)
+        # 最大回撤天数 = 净值从峰值回落的最长持续交易日数 (创新高重置)
+        max_dd_days = 0
+        pk_idx = 0
+        for i in range(1, len(values)):
+            if values[i] >= values[pk_idx]:
+                pk_idx = i
+            elif i - pk_idx > max_dd_days:
+                max_dd_days = i - pk_idx
     else:
         sharpe = 0
         max_drawdown = 0
+        max_dd_days = 0
 
     stats = {
         'initial_capital': initial_capital,
@@ -1002,6 +1024,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         'annual_return': annual_return,
         'sharpe': sharpe,
         'max_drawdown': max_drawdown,
+        'max_drawdown_days': max_dd_days,
         'total_trades': len(sell_trades),
         'win_rate': win_rate,
         'avg_win': avg_win,
@@ -1039,9 +1062,17 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         sig_peaks = np.maximum.accumulate(sig_vals)
         sig_drawdowns = (sig_peaks - sig_vals) / sig_peaks
         sig_max_dd = np.max(sig_drawdowns)
+        sig_max_dd_days = 0
+        sig_pk = 0
+        for i in range(1, len(sig_vals)):
+            if sig_vals[i] >= sig_vals[sig_pk]:
+                sig_pk = i
+            elif i - sig_pk > sig_max_dd_days:
+                sig_max_dd_days = i - sig_pk
     else:
         sig_sharpe = 0
         sig_max_dd = 0
+        sig_max_dd_days = 0
     signal_stats = {
         'initial_capital': initial_capital,
         'final_value': sig_final,
@@ -1049,6 +1080,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         'annual_return': sig_annual,
         'sharpe': sig_sharpe,
         'max_drawdown': sig_max_dd,
+        'max_drawdown_days': sig_max_dd_days,
         'total_trades': len(sig_sell_pnls),
         'win_rate': len(sig_wins) / len(sig_sell_pnls) if sig_sell_pnls else 0,
         'avg_win': np.mean(sig_wins) if sig_wins else 0,

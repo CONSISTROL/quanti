@@ -440,6 +440,8 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
             <div class="card-value">{sig_stats['sharpe']:.2f}</div></div>
         <div class="card"><div class="card-label">最大回撤</div>
             <div class="card-value" style="color:#e74c3c;">{sig_stats['max_drawdown']:.1%}</div></div>
+        <div class="card"><div class="card-label">最大回撤天数</div>
+            <div class="card-value" style="color:#e74c3c;">{sig_stats.get('max_drawdown_days', 0)} 天</div></div>
         <div class="card"><div class="card-label">交易次数</div>
             <div class="card-value">{sig_stats['total_trades']}</div></div>
         <div class="card"><div class="card-label">胜率</div>
@@ -473,7 +475,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     <table id="sys-signals-table" style="margin-bottom:20px;">
     <thead><tr>
         <th>信号日</th><th>方向</th><th>代码</th><th>名称</th>
-        <th>信号价</th><th>数量</th><th>金额</th><th>盈亏</th><th>累计盈亏</th><th>原因</th>
+        <th>信号价</th><th>数量</th><th>金额</th><th>盈亏</th><th>累计盈亏</th><th>回撤天数</th><th>原因</th>
     </tr></thead>
     <tbody>""")
             for t in trades:
@@ -491,6 +493,9 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 pnl_css = ''
                 if t.direction == 'SELL':
                     pnl_css = 'color:#27ae60;' if pnl_sys > 0 else 'color:#e74c3c;'
+                # 回撤天数 = 持仓期间最高收盘价日 → 卖出信号日的交易日数 (信号账户口径)
+                dd_val = getattr(t, 'drawdown_days', None)
+                dd_str = f'{dd_val}' if (t.direction == 'SELL' and dd_val is not None) else '-'
                 # 累计盈亏: 按信号日取信号账户净值 (信号当日按信号价成交的收益)
                 sig_date_str = t.signal_date.strftime('%Y-%m-%d')
                 cum_nav = nav_map.get(sig_date_str) if initial_cap else None
@@ -511,6 +516,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                     <td>¥{sig_price * sig_shares:,.0f}</td>
                     <td style="{pnl_css}font-weight:600;">{pnl_str}</td>
                     <td style="{cum_css}font-weight:600;">{cum_str}</td>
+                    <td>{dd_str}</td>
                     <td>{t.reason}</td>
                 </tr>""")
             html_parts.append("""
