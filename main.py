@@ -45,6 +45,21 @@ def load_config():
     return config
 
 
+def apply_strategy_override(tr_cfg, strat_name):
+    """应用 --strategy 覆盖 + 策略推荐参数 (运行时覆盖, 不写 config.json)"""
+    from strategies import get_strategy, strategy_label
+    st = get_strategy(strat_name)  # 校验: 未知策略直接抛错
+    tr_cfg = dict(tr_cfg)
+    tr_cfg['strategy'] = strat_name
+    rec = getattr(st, 'recommended', None)
+    if rec:
+        for k, v in rec.items():
+            tr_cfg[k] = v
+        print(f"  📋 已应用 {strategy_label(strat_name)} 推荐参数: "
+              + ", ".join(f"{k}={v}" for k, v in rec.items()))
+    return tr_cfg
+
+
 def run_optimization(config):
     """运行参数优化"""
     dt_cfg = config.get('data', {})
@@ -142,10 +157,12 @@ def run_optimization(config):
             print(f'    "min_buy_score": {best["params"]["min_buy_score"]}')
 
 
-def run_single_stock(stock_code, config):
+def run_single_stock(stock_code, config, strat_override=None):
     """运行个股回测"""
     dt_cfg = config.get('data', {})
     tr_cfg = config.get('trading', {})
+    if strat_override:
+        tr_cfg = apply_strategy_override(tr_cfg, strat_override)
     bt_cfg = config.get('backtest', {})
 
     print("╔══════════════════════════════════════════════════╗")
@@ -208,6 +225,16 @@ def run_single_stock(stock_code, config):
 def main():
     config = load_config()
 
+    # --strategy 覆盖 config trading.strategy (实验策略如 gap_open 无需改 config.json)
+    strat_override = None
+    for i, arg in enumerate(sys.argv):
+        if arg == '--strategy' and i + 1 < len(sys.argv):
+            strat_override = sys.argv[i + 1]
+            break
+        elif arg.startswith('--strategy='):
+            strat_override = arg.split('=')[1]
+            break
+
     # 检查是否运行参数优化
     if '--optimize' in sys.argv:
         run_optimization(config)
@@ -231,13 +258,15 @@ def main():
                 raw = raw[len(prefix):]
                 break
         raw = raw.zfill(6)
-        run_single_stock(raw, config)
+        run_single_stock(raw, config, strat_override)
         return
 
     # 读取配置
     dt_cfg = config.get('data', {})
     sc_cfg = config.get('scoring', {})
     tr_cfg = config.get('trading', {})
+    if strat_override:
+        tr_cfg = apply_strategy_override(tr_cfg, strat_override)
     bt_cfg = config.get('backtest', {})
 
     print("╔══════════════════════════════════════════════════╗")
@@ -346,10 +375,14 @@ def main():
         # 主报告负责"系统买卖信号记录" — 引擎同一次回测同时产出两种口径:
         #   信号账户 (signal_stats) = 信号日按信号价成交 → 主报告统计/系统买卖信号记录
         #   执行账户 (stats)        = config 成交模式 (exec_next_close 次日尾盘价) → 用户A操作记录(见自选池报告)
-        exec_mode = ('次日尾盘价成交' if tr_cfg.get('exec_next_close') else
-                     '次日开盘价成交' if tr_cfg.get('exec_next_open') else
-                     '信号当日收盘价成交')
-        print(f'  成交模式: {exec_mode} — 主报告统计=系统买卖信号口径 (信号日按信号价成交)')
+        if tr_cfg.get('strategy') == 'gap_open':
+            # 跳空高开策略: 开盘决策→当日开盘价买入, 次日收盘卖出 (无延迟, 双口径自然一致)
+            print('  成交模式: 开盘决策→当日开盘价买入, 次日收盘卖出 (跳空高开隔日轮动)')
+        else:
+            exec_mode = ('次日尾盘价成交' if tr_cfg.get('exec_next_close') else
+                         '次日开盘价成交' if tr_cfg.get('exec_next_open') else
+                         '信号当日收盘价成交')
+            print(f'  成交模式: {exec_mode} — 主报告统计=系统买卖信号口径 (信号日按信号价成交)')
 
         result = run_swing_backtest(
             history_dict=data['history'],

@@ -6,6 +6,7 @@
   momentum  动量趋势 (龙头+SKDJ超卖金叉)
   bollinger 布林线均值回归 (收盘≤下轨买, ≥中轨卖)
   watchlist 自选轮动 (强弱评分+单持仓满仓+卖弱买强, config watchlist 指定自选)
+  gap_open  跳空高开隔日轮动 (开盘决策+开盘买入+次日收盘卖出, 全市场扫描)
 """
 from .base import BaseStrategy
 from .reversal import ReversalStrategy
@@ -13,6 +14,7 @@ from .momentum import MomentumStrategy
 from .bollinger import BollingerStrategy
 from .watchlist import WatchlistStrategy
 from .watchlist_weekly import WatchlistWeeklyStrategy
+from .gap_open import GapOpenStrategy
 
 STRATEGIES = {
     'reversal': ReversalStrategy,
@@ -20,6 +22,7 @@ STRATEGIES = {
     'bollinger': BollingerStrategy,
     'watchlist': WatchlistStrategy,
     'watchlist_weekly': WatchlistWeeklyStrategy,
+    'gap_open': GapOpenStrategy,
 }
 
 

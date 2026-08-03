@@ -277,8 +277,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 candidate_codes.append(cc)
         candidate_set = set(candidate_codes)
         print(f"  自选轮动: {len(candidate_codes)} 只 (config watchlist)")
-    elif strategy in ('reversal', 'bollinger'):
-        # 全市场扫描策略: 超跌/破轨机会 anywhere
+    elif strategy in ('reversal', 'bollinger', 'gap_open'):
+        # 全市场扫描策略: 超跌/破轨/跳空高开 anywhere
         candidate_codes = list(pure_to_sina.keys())
         candidate_set = set(candidate_codes)
         print(f"  候选: 全部 {len(candidate_codes)} 只 (全市场扫描)")
@@ -347,6 +347,9 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     exec_next_open = config.get('exec_next_open', False)
     buy_next_open = config.get('buy_next_open', False)
     exec_next_close = config.get('exec_next_close', False)
+    if strategy == 'gap_open':
+        # 跳空高开是"开盘决策"策略: 必须当日开盘价成交, 延迟模式会失去跳空意义
+        exec_next_open = exec_next_close = buy_next_open = False
     pending_sells = []    # [(pos, reason, sig_date, sig_price)] — T日收盘卖出信号 → T+1开盘执行
     pending_reduces = []  # [(pos, reason, ratio, sig_date, sig_price)] — T日收盘减仓信号 → T+1开盘执行
     pending_buys = []     # [(code, name, score, reason, entry_type, sig_date, sig_price)] — T日收盘买入信号 → T+1开盘执行
@@ -635,6 +638,16 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
             today_str = today.strftime('%Y-%m-%d')
 
+            # 跳空高开策略: 预构建 K线 open 数组索引 (searchsorted 取当日开盘价, 开盘决策)
+            kline_open = {}
+            if strategy == 'gap_open':
+                for c in candidate_codes:
+                    s = pure_to_sina.get(c)
+                    hdf = history_dict.get(s) if s else None
+                    if hdf is not None and 'open' in hdf.columns and 'date' in hdf.columns:
+                        kline_open[c] = (hdf['date'].values.astype('datetime64[ns]'),
+                                         hdf['open'].values.astype(float))
+
             for code in candidate_codes:
                 if code in sold_today:
                     continue  # 当日已卖出 (当日禁买)
@@ -643,6 +656,14 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 sina = pure_to_sina.get(code)
                 if not sina:
                     continue
+
+                # 当日开盘价 (仅 gap_open 需要: 开盘决策, ctx['open'] 传给 buy_signal)
+                open_px = None
+                if strategy == 'gap_open' and code in kline_open:
+                    darr, oarr = kline_open[code]
+                    pos = int(np.searchsorted(darr, np.datetime64(today), side='right')) - 1
+                    if pos >= 0:
+                        open_px = float(oarr[pos])
 
                 # 优先使用预计算数据 (包含周线SKDJ)
                 ind = None
@@ -671,7 +692,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
                     ind = compute_indicators(closes, volumes_arr, highs_arr, lows_arr)
 
-                is_buy, score, reason = buy_signal_func(ind)
+                is_buy, score, reason = buy_signal_func(ind, code=code, open=open_px)
                 entry_type = 'swing'
 
                 if not is_buy and has_rebound:
@@ -708,7 +729,9 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                         match = scored_df[scored_df['code'].astype(str).str.zfill(6) == code]
                         if not match.empty:
                             name = str(match.iloc[0].get('name', ''))
-                    buy_candidates.append((code, name, ind['close'], score, reason, entry_type))
+                    # 跳空高开: 开盘决策当日开盘价成交 (buy_price 从 ind['close'] 换成当日 open)
+                    buy_price = open_px if (strategy == 'gap_open' and open_px) else ind['close']
+                    buy_candidates.append((code, name, buy_price, score, reason, entry_type))
 
             # 按信号强度排序, 买入前 available_slots 个
             buy_candidates.sort(key=lambda x: x[3], reverse=True)
