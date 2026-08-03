@@ -84,41 +84,34 @@ def main(config=None):
         for i, c in enumerate(precomputed)
     ])
 
-    # ---- 4. 回测 (两套成交模式分开回测) ----
+    # ---- 4. 回测 (一次回测、两种口径) ----
+    # 引擎同时维护两个账户, 共享同一批信号/交易:
+    #   信号账户 (signal_stats) = 信号日按信号价成交 → "系统买卖信号记录"
+    #   执行账户 (stats)        = 次日尾盘价成交 (exec_next_close) → "用户A操作记录"
     tr_cfg = dict(config['trading'])
     tr_cfg['strategy'] = tr_cfg.get('strategy', 'watchlist')  # 用config策略 (watchlist/watchlist_weekly)
     tr_cfg['watchlist'] = list(precomputed.keys())
     tr_cfg['max_positions'] = 1
     tr_cfg['position_pct'] = 1.0
     tr_cfg['kelly_mode'] = False
-    # 系统买卖信号 (原教旨): 信号当日按信号价(收盘价)成交 — 系统信号理论收益
-    tr_sys = dict(tr_cfg)
-    for k in ('exec_next_open', 'exec_next_close', 'buy_next_open'):
-        tr_sys.pop(k, None)
 
     from trading_engine import run_swing_backtest, print_trade_summary
     start = config.get('backtest', {}).get('start_date', '2025-01-01')
     end = config.get('backtest', {}).get('end_date', '2026-08-02')
 
-    result_sys = run_swing_backtest(
-        hist, scored_df, tr_sys,
-        start_date_str=start, end_date_str=end,
-        precomputed=precomputed,
-    )
     result = run_swing_backtest(
         hist, scored_df, tr_cfg,
         start_date_str=start, end_date_str=end,
         precomputed=precomputed,
     )
-    if result_sys:
-        st = result_sys['stats']
-        print('\n' + '═' * 90)
-        print('  📋 系统买卖信号记录 (原教旨: 信号当日收盘价成交, 与成交模式无关)')
-        print('═' * 90)
-        print(f"    总收益率: {st['total_return']:+.2%} | 年化: {st['annual_return']:+.2%} "
-              f"| Sharpe: {st['sharpe']:.2f} | 最大回撤: {st['max_drawdown']:.1%} "
-              f"| 交易: {st['total_trades']}笔 | 胜率: {st['win_rate']:.0%}")
     if result:
+        sig_st = result.get('signal_stats') or result['stats']
+        print('\n' + '═' * 90)
+        print('  📋 系统买卖信号记录 (信号日按信号价成交, 与成交模式无关)')
+        print('═' * 90)
+        print(f"    总收益率: {sig_st['total_return']:+.2%} | 年化: {sig_st['annual_return']:+.2%} "
+              f"| Sharpe: {sig_st['sharpe']:.2f} | 最大回撤: {sig_st['max_drawdown']:.1%} "
+              f"| 交易: {sig_st['total_trades']}笔 | 胜率: {sig_st['win_rate']:.0%}")
         print('\n' + '═' * 90)
         print('  🔄 用户A操作记录 (次日尾盘价成交, exec_next_close 延迟一天)')
         print('═' * 90)
@@ -245,14 +238,14 @@ def main(config=None):
             print(f'\n  ⚠ ECharts报告生成失败: {e}')
             traceback.print_exc()
 
-        # 生成HTML报告 (系统买卖信号记录 = 原教旨即时执行回测)
+        # 生成HTML报告 (系统买卖信号记录 = 信号口径: 信号日/信号价/信号盈亏 + 信号账户总收益率)
         from report_generator import generate_html_report
         from datetime import datetime
         output_path = f'report_watchlist_{datetime.now().strftime("%Y%m%d")}.html'
         try:
             actual_path = generate_html_report(
                 scored_df, 5, {}, output_path,
-                backtest_result=result_sys, trade_result=result_sys,
+                backtest_result=result, trade_result=result,
             )
             print(f'\n  ✅ HTML报告(系统信号): {os.path.abspath(actual_path)}')
         except Exception as e:

@@ -343,17 +343,18 @@ def main():
             end_date=bt_cfg.get('end_date', '2026-07-27'),
         )
 
-        # 主报告负责"系统买卖信号记录" — 原教旨口径: 信号当日按信号价(收盘价)成交,
-        # 不模拟延迟执行 (延迟一天的用户A口径见自选池轮动分析报告)
-        tr_cfg_signal = dict(tr_cfg)
-        for _k in ('exec_next_open', 'exec_next_close', 'buy_next_open'):
-            tr_cfg_signal.pop(_k, None)
-        print('  成交模式: 系统信号原教旨 (信号当日收盘价成交) — 主报告=系统买卖信号记录')
+        # 主报告负责"系统买卖信号记录" — 引擎同一次回测同时产出两种口径:
+        #   信号账户 (signal_stats) = 信号日按信号价成交 → 主报告统计/系统买卖信号记录
+        #   执行账户 (stats)        = config 成交模式 (exec_next_close 次日尾盘价) → 用户A操作记录(见自选池报告)
+        exec_mode = ('次日尾盘价成交' if tr_cfg.get('exec_next_close') else
+                     '次日开盘价成交' if tr_cfg.get('exec_next_open') else
+                     '信号当日收盘价成交')
+        print(f'  成交模式: {exec_mode} — 主报告统计=系统买卖信号口径 (信号日按信号价成交)')
 
         result = run_swing_backtest(
             history_dict=data['history'],
             scored_df=scored_df,
-            config=tr_cfg_signal,
+            config=tr_cfg,
             start_date_str=bt_cfg.get('start_date', '2026-01-01'),
             end_date_str=bt_cfg.get('end_date', '2026-07-27'),
             precomputed=precomputed,

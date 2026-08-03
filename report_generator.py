@@ -425,28 +425,29 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
         except Exception:
             pass
 
-        # 统计卡片
+        # 统计卡片 (系统买卖信号口径: 信号当日按信号价成交的收益)
+        sig_stats = trade_result.get('signal_stats') or stats
         html_parts.append("""
-    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📈 波段交易回测</h2>
+    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📈 波段交易回测 <span style="font-size:12px;color:#888;">(系统买卖信号口径: 信号当日按信号价成交)</span></h2>
     <div class="cards">""")
-        ret_css = 'color:#27ae60;' if stats['total_return'] > 0 else 'color:#e74c3c;'
+        ret_css = 'color:#27ae60;' if sig_stats['total_return'] > 0 else 'color:#e74c3c;'
         html_parts.append(f"""
         <div class="card"><div class="card-label">总收益率</div>
-            <div class="card-value" style="{ret_css}">{stats['total_return']:+.1%}</div></div>
+            <div class="card-value" style="{ret_css}">{sig_stats['total_return']:+.1%}</div></div>
         <div class="card"><div class="card-label">年化收益</div>
-            <div class="card-value" style="{ret_css}">{stats['annual_return']:+.1%}</div></div>
+            <div class="card-value" style="{ret_css}">{sig_stats['annual_return']:+.1%}</div></div>
         <div class="card"><div class="card-label">Sharpe</div>
-            <div class="card-value">{stats['sharpe']:.2f}</div></div>
+            <div class="card-value">{sig_stats['sharpe']:.2f}</div></div>
         <div class="card"><div class="card-label">最大回撤</div>
-            <div class="card-value" style="color:#e74c3c;">{stats['max_drawdown']:.1%}</div></div>
+            <div class="card-value" style="color:#e74c3c;">{sig_stats['max_drawdown']:.1%}</div></div>
         <div class="card"><div class="card-label">交易次数</div>
-            <div class="card-value">{stats['total_trades']}</div></div>
+            <div class="card-value">{sig_stats['total_trades']}</div></div>
         <div class="card"><div class="card-label">胜率</div>
-            <div class="card-value">{stats['win_rate']:.0%}</div></div>
+            <div class="card-value">{sig_stats['win_rate']:.0%}</div></div>
         <div class="card"><div class="card-label">盈亏比</div>
-            <div class="card-value">{f"{stats['profit_loss_ratio']:.2f}" if stats['avg_loss'] != 0 else '∞'}</div></div>
+            <div class="card-value">{f"{sig_stats['profit_loss_ratio']:.2f}" if sig_stats['avg_loss'] != 0 else '∞'}</div></div>
         <div class="card"><div class="card-label">最终资金</div>
-            <div class="card-value" style="{ret_css}">¥{stats['final_value']:,.0f}</div></div>
+            <div class="card-value" style="{ret_css}">¥{sig_stats['final_value']:,.0f}</div></div>
     </div>""")
 
         # 收益曲线
@@ -457,18 +458,19 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     </div>""")
 
         # 操作记录表 (系统买卖信号: 价格/盈亏按信号日信号价口径)
-        # 累计盈亏 = 信号日净值/初始资金-1 (与终端 print_trade_summary 同口径)
+        # 累计盈亏 = 信号日信号账户净值/初始资金-1 (信号当日按信号价成交)
         nav_map = {}
         try:
             initial_cap = trade_result['initial_capital']
-            for d, v in trade_result.get('equity_curve', []):
+            sig_curve = trade_result.get('signal_equity_curve') or trade_result.get('equity_curve', [])
+            for d, v in sig_curve:
                 nav_map[pd.Timestamp(d).strftime('%Y-%m-%d')] = v
         except Exception:
             initial_cap = 0
         if trades:
             html_parts.append("""
     <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 系统买卖信号记录</h2>
-    <table style="margin-bottom:20px;">
+    <table id="sys-signals-table" style="margin-bottom:20px;">
     <thead><tr>
         <th>信号日</th><th>方向</th><th>代码</th><th>名称</th>
         <th>信号价</th><th>数量</th><th>金额</th><th>盈亏</th><th>累计盈亏</th><th>原因</th>
@@ -479,6 +481,9 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 dir_label = '买入' if t.direction == 'BUY' else '卖出'
                 # 信号口径: 价格 = 信号日收盘价, 盈亏 = 按信号价计算的收益 (非延迟成交时与执行口径相同)
                 sig_price = getattr(t, 'signal_price', None) or t.price
+                sig_shares = getattr(t, 'signal_shares', None)
+                if sig_shares is None:
+                    sig_shares = t.shares
                 pnl_sys = getattr(t, 'pnl_signal', None)
                 if pnl_sys is None:
                     pnl_sys = t.pnl_pct
@@ -486,7 +491,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 pnl_css = ''
                 if t.direction == 'SELL':
                     pnl_css = 'color:#27ae60;' if pnl_sys > 0 else 'color:#e74c3c;'
-                # 累计盈亏: 按信号日取净值 (原教旨回测中信号日=成交日, 即当日收盘净值)
+                # 累计盈亏: 按信号日取信号账户净值 (信号当日按信号价成交的收益)
                 sig_date_str = t.signal_date.strftime('%Y-%m-%d')
                 cum_nav = nav_map.get(sig_date_str) if initial_cap else None
                 if cum_nav is None:
@@ -502,8 +507,8 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                     <td><strong>{t.code}</strong></td>
                     <td>{t.name}</td>
                     <td>{sig_price:.2f}</td>
-                    <td>{t.shares}</td>
-                    <td>¥{sig_price * t.shares:,.0f}</td>
+                    <td>{sig_shares}</td>
+                    <td>¥{sig_price * sig_shares:,.0f}</td>
                     <td style="{pnl_css}font-weight:600;">{pnl_str}</td>
                     <td style="{cum_css}font-weight:600;">{cum_str}</td>
                     <td>{t.reason}</td>
@@ -607,17 +612,21 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     bar.className = 'filter-bar';
     tbl.parentNode.insertBefore(bar, tbl);
     var pageSize = 30, page = 0, pager = null;
-    if (rows.length > 30) {
+    /* 系统买卖信号记录表不分页, 全部显示 (交易流水滚动查看更方便) */
+    if (rows.length > 30 && tbl.id !== 'sys-signals-table') {
       pager = document.createElement('div');
       pager.className = 'filter-pager';
       tbl.parentNode.insertBefore(pager, tbl.nextSibling);
     }
     function renderRows(visible) {
+      rows.forEach(function (r) { r.style.display = 'none'; });
+      if (!pager) {
+        visible.forEach(function (r) { r.style.display = ''; });
+        return;
+      }
       var start = page * pageSize;
       var end = Math.min(start + pageSize, visible.length);
-      rows.forEach(function (r) { r.style.display = 'none'; });
       for (var i = start; i < end; i++) visible[i].style.display = '';
-      if (!pager) return;
       var totalPages = Math.max(1, Math.ceil(visible.length / pageSize));
       pager.innerHTML = '';
       var info = document.createElement('span');

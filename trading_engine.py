@@ -888,6 +888,78 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
         equity_curve.append((today, portfolio_value))
 
+    # ---- 信号账户净值 (系统信号口径: 同一批信号按信号价即时成交) ----
+    # 用户A执行账户 = equity_curve (延迟成交); 信号账户 = 信号日按信号价成交的虚拟账户.
+    # 两账户共享同一批 trades (交易次数一致), 仅价格/盈亏口径不同:
+    #   信号账户 → "系统买卖信号记录" (信号日/信号价/信号口径收益)
+    #   执行账户 → "用户A操作记录"  (执行日/执行价/执行口径收益)
+    signal_curve = []
+    if trades:
+        sig_codes = {t.code for t in trades}
+        sig_closes = {}
+        for code in sig_codes:
+            pd_map = {}
+            # history 原始K线优先 (覆盖完整 — 回测信号可能基于此产生, 而指标缓存precomputed可能缺早期段)
+            sina = pure_to_sina.get(code)
+            hdf = history_dict.get(sina) if sina else None
+            if hdf is not None and 'date' in hdf.columns and 'close' in hdf.columns:
+                for d, c in zip(hdf['date'].values, hdf['close'].values):
+                    pd_map[pd.Timestamp(d).strftime('%Y-%m-%d')] = float(c)
+            # precomputed 补缺 (history 无该code时)
+            if precomputed and code in precomputed:
+                for dstr, v in precomputed[code].items():
+                    if v and v.get('close') and dstr not in pd_map:
+                        pd_map[dstr] = float(v['close'])
+            sig_closes[code] = pd_map
+        trades_by_day = {}
+        for t in trades:  # 保持引擎顺序 (同日先卖后买)
+            sd = t.signal_date.strftime('%Y-%m-%d')
+            trades_by_day.setdefault(sd, []).append(t)
+        # 信号账户独立资金管理: 买入按信号账户自身现金满仓 (同日多笔等分),
+        # 卖出清仓 — 份额与执行账户不同, 但信号序列一致 (交易次数对得上)
+        s_cash = float(initial_capital)
+        s_held = {}  # {code: shares}
+        sig_last_close = {}  # {code: 最近有效收盘价} — 缺失日期(停牌/未上市)前向填充
+        for day in trading_dates:
+            ds = day.strftime('%Y-%m-%d')
+            day_trades = trades_by_day.get(ds, [])
+            # 先卖 (清仓, 含高位减仓等部分卖出信号 — 信号账户视作转弱清仓)
+            for t in day_trades:
+                if t.direction != 'SELL':
+                    continue
+                sig_px = getattr(t, 'signal_price', None)
+                if sig_px is None:
+                    sig_px = t.price
+                held_shares = s_held.get(t.code, 0)
+                s_cash += held_shares * sig_px
+                s_held.pop(t.code, None)
+                t.signal_shares = held_shares  # 信号账户实际卖出份额
+            # 后买 (满仓, 同日多笔等分现金)
+            buys = [t for t in day_trades if t.direction == 'BUY']
+            if buys:
+                per_alloc = s_cash / len(buys)
+                for t in buys:
+                    sig_px = getattr(t, 'signal_price', None)
+                    if sig_px is None:
+                        sig_px = t.price
+                    if sig_px <= 0:
+                        t.signal_shares = 0
+                        continue
+                    shares = int(per_alloc / sig_px / 100) * 100
+                    if shares > 0:
+                        s_cash -= shares * sig_px
+                        s_held[t.code] = s_held.get(t.code, 0) + shares
+                    t.signal_shares = shares
+            mv = 0
+            for cd, sh in s_held.items():
+                c = sig_closes.get(cd, {}).get(ds)
+                if c is not None:
+                    sig_last_close[cd] = c
+                mv += sh * sig_last_close.get(cd, 0)
+            signal_curve.append((day, s_cash + mv))
+    else:
+        signal_curve = list(equity_curve)
+
     # ---- 统计 ----
     final_value = equity_curve[-1][1] if equity_curve else initial_capital
     total_return = (final_value / initial_capital - 1)
@@ -939,6 +1011,53 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         'max_positions': max_positions,
     }
 
+    # 信号账户统计 (口径与执行账户一致, 胜率/盈亏按信号口径 pnl_signal)
+    sig_final = signal_curve[-1][1] if signal_curve else initial_capital
+    sig_total = (sig_final / initial_capital - 1)
+    sig_annual = (1 + sig_total) ** (252 / max(trading_days, 1)) - 1
+    sig_sell_pnls = []
+    for t in trades:
+        if t.direction == 'SELL':
+            p = getattr(t, 'pnl_signal', None)
+            if p is None:
+                p = t.pnl_pct
+            sig_sell_pnls.append(p)
+    sig_wins = [p for p in sig_sell_pnls if p > 0]
+    sig_losses = [p for p in sig_sell_pnls if p <= 0]
+    if len(signal_curve) > 1:
+        sig_rets = []
+        for i in range(1, len(signal_curve)):
+            prev = signal_curve[i - 1][1]
+            curr = signal_curve[i][1]
+            if prev > 0:
+                sig_rets.append(curr / prev - 1)
+        if sig_rets and np.std(sig_rets) > 0:
+            sig_sharpe = np.mean(sig_rets) / np.std(sig_rets) * np.sqrt(252)
+        else:
+            sig_sharpe = 0
+        sig_vals = [e[1] for e in signal_curve]
+        sig_peaks = np.maximum.accumulate(sig_vals)
+        sig_drawdowns = (sig_peaks - sig_vals) / sig_peaks
+        sig_max_dd = np.max(sig_drawdowns)
+    else:
+        sig_sharpe = 0
+        sig_max_dd = 0
+    signal_stats = {
+        'initial_capital': initial_capital,
+        'final_value': sig_final,
+        'total_return': sig_total,
+        'annual_return': sig_annual,
+        'sharpe': sig_sharpe,
+        'max_drawdown': sig_max_dd,
+        'total_trades': len(sig_sell_pnls),
+        'win_rate': len(sig_wins) / len(sig_sell_pnls) if sig_sell_pnls else 0,
+        'avg_win': np.mean(sig_wins) if sig_wins else 0,
+        'avg_loss': np.mean(sig_losses) if sig_losses else 0,
+        'profit_loss_ratio': abs(np.mean(sig_wins) / np.mean(sig_losses)) if sig_wins and sig_losses and np.mean(sig_losses) != 0 else 0,
+        'trading_days': trading_days,
+        'max_positions': max_positions,
+    }
+
     # 给持仓补充最新价格
     for pos in positions:
         sina = pure_to_sina.get(pos.code)
@@ -959,6 +1078,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         'trades': trades,
         'equity_curve': equity_curve,
         'stats': stats,
+        'signal_equity_curve': signal_curve,
+        'signal_stats': signal_stats,
         'final_positions': positions,
         'initial_capital': initial_capital,
     }
@@ -1068,16 +1189,20 @@ def print_trade_summary(result):
 
 
 def generate_equity_chart(result):
-    """生成收益曲线图 (ECharts) — 净值+回撤+买卖点"""
-    if result is None or not result['equity_curve']:
+    """生成收益曲线图 (ECharts) — 净值+回撤+买卖点 (优先信号账户口径: 系统买卖信号)"""
+    if result is None:
+        return ''
+    eq_curve = result.get('signal_equity_curve') or result['equity_curve']
+    st = result.get('signal_stats') or result['stats']
+    if not eq_curve:
         return ''
 
     from report_echarts import echarts_script, UP, DOWN, GRID, TEXT, BLUE, GRAY
 
-    dates = [pd.Timestamp(e[0]).strftime('%Y-%m-%d') for e in result['equity_curve']]
-    values = [e[1] for e in result['equity_curve']]
+    dates = [pd.Timestamp(e[0]).strftime('%Y-%m-%d') for e in eq_curve]
+    values = [e[1] for e in eq_curve]
     initial = result['initial_capital']
-    stats = result['stats']
+    stats = st
 
     nav = [v / initial for v in values]
     peaks = np.maximum.accumulate(nav)
@@ -1086,18 +1211,22 @@ def generate_equity_chart(result):
     final_ret = stats['total_return']
     line_color = UP if final_ret >= 0 else DOWN
 
-    # 买卖点
+    # 买卖点 (信号账户口径: 标记于信号日/信号价)
     buy_pts, sell_pts = [], []
     for t in result['trades']:
-        d = pd.Timestamp(t.date).strftime('%Y-%m-%d')
+        d = pd.Timestamp(getattr(t, 'signal_date', None) or t.date).strftime('%Y-%m-%d')
         if d in dates:
             idx = dates.index(d)
+            sig_px = getattr(t, 'signal_price', None) or t.price
             if t.direction == 'BUY':
                 buy_pts.append({'name': '买入', 'value': [d, round(nav[idx], 4)],
-                                'code': t.code, 'price': t.price, 'reason': t.reason})
+                                'code': t.code, 'price': sig_px, 'reason': t.reason})
             else:
+                pnl_sig = getattr(t, 'pnl_signal', None)
+                if pnl_sig is None:
+                    pnl_sig = t.pnl_pct
                 sell_pts.append({'name': '卖出', 'value': [d, round(nav[idx], 4)],
-                                 'code': t.code, 'price': t.price, 'pnl': round(t.pnl_pct * 100, 1),
+                                 'code': t.code, 'price': sig_px, 'pnl': round(pnl_sig * 100, 1),
                                  'reason': t.reason})
 
     option = {
