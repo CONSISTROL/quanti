@@ -127,12 +127,19 @@ def generate_echarts_report(combo, per_stock, output_path):
 
     # ---- 4. 用户A操作记录 = 回测trades流水 (忠实执行, 延后1交易日) ----
     # exec_next_close 模式下 trades.date 已是执行日(T+1尾盘), price 已是执行价
+    # 累计盈亏 = 执行日净值/初始资金-1 (与终端 print_trade_summary 同口径)
+    initial = combo['initial']
+    nav_map = {}
+    for d, v in combo.get('eq', []):
+        nav_map[pd.Timestamp(d).strftime('%Y-%m-%d')] = v
     user_trades = []
     for t in combo.get('trades', []):
+        t_date = pd.Timestamp(t.date).strftime('%Y-%m-%d')
+        cum_nav = nav_map.get(t_date)
+        if cum_nav is None:
+            cum_nav = initial
         user_trades.append({
-            'date': pd.Timestamp(t.date).strftime('%Y-%m-%d'),
-            'signal_date': (pd.Timestamp(t.signal_date).strftime('%Y-%m-%d')
-                            if getattr(t, 'signal_date', None) is not None else None),
+            'date': t_date,
             'code': t.code,
             'name': t.name,
             'side': t.direction,
@@ -143,6 +150,7 @@ def generate_echarts_report(combo, per_stock, output_path):
             'reason': t.reason,
             'pnl': (round(t.pnl_pct * 100, 2) if t.direction == 'SELL'
                     and getattr(t, 'pnl_pct', 0) is not None else None),
+            'cum': round((cum_nav / initial - 1) * 100, 2),
         })
     user_trades.sort(key=lambda x: x['date'])
 
@@ -218,11 +226,11 @@ def generate_echarts_report(combo, per_stock, output_path):
   </div>
   <div class="card"><h2>🔄 用户A操作记录 (按回测决策延后1交易日执行)</h2>
     <table class="trades">
-      <thead><tr><th>信号日</th><th>执行日期</th><th>方向</th><th>代码</th><th>名称</th><th>价格</th>
-        <th>数量</th><th>金额</th><th>盈亏</th><th>信号原因</th></tr></thead>
+      <thead><tr><th>执行日期</th><th>方向</th><th>代码</th><th>名称</th><th>价格</th>
+        <th>数量</th><th>金额</th><th>盈亏</th><th>累计盈亏</th><th>信号原因</th></tr></thead>
       <tbody id="userTbody"></tbody>
     </table>
-    <div class="legend-hint">💡 本表 = 用户A延后执行流水: 信号日(T)收盘收到系统决策 → 次日(T+1)尾盘(或开盘)执行, 价格/盈亏均为<strong>执行口径</strong>(与主报告"系统买卖信号记录"的信号日收盘价即时成交口径不同); 信号日列可与系统信号逐日对照</div>
+    <div class="legend-hint">💡 本表 = 用户A延后执行流水: 信号日(T)收盘收到系统决策 → 次日(T+1)尾盘(或开盘)执行, 故执行日期=信号日+1交易日(恒定延迟, 无需单列信号日); 价格/盈亏均为<strong>执行口径</strong>(与主报告"系统买卖信号记录"的信号日收盘价即时成交口径不同)</div>
   </div>
 </div>
 <script>
@@ -338,14 +346,19 @@ const COLOR = {{ up: '#e8403a', down: '#1ba27a', grid: '#eef1f4', text: '#4e5969
       const pcls = m.pnl >= 0 ? 'buy' : 'sell';
       pnl = '<span class="' + pcls + '">' + (m.pnl >= 0 ? '+' : '') + m.pnl.toFixed(2) + '%</span>';
     }}
+    let cum = '';
+    if (m.cum !== null && m.cum !== undefined) {{
+      const ccls = m.cum >= 0 ? 'buy' : 'sell';
+      cum = '<span class="' + ccls + '">' + (m.cum >= 0 ? '+' : '') + m.cum.toFixed(2) + '%</span>';
+    }}
     tr.innerHTML =
-      '<td>' + (m.signal_date || '—') + '</td>' +
       '<td>' + m.date + '</td>' +
       '<td class="' + cls + '">' + m.side_cn + '</td>' +
       '<td>' + m.code + '</td><td>' + m.name + '</td>' +
       '<td>' + m.price.toFixed(3) + '</td>' +
       '<td>' + (m.shares || '') + '</td><td>' + amount + '</td>' +
       '<td>' + pnl + '</td>' +
+      '<td>' + cum + '</td>' +
       '<td class="reason-cell">' + (m.reason || '') + '</td>';
     tb.appendChild(tr);
   }});

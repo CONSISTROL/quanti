@@ -457,13 +457,21 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     </div>""")
 
         # 操作记录表 (系统买卖信号: 价格/盈亏按信号日信号价口径)
+        # 累计盈亏 = 信号日净值/初始资金-1 (与终端 print_trade_summary 同口径)
+        nav_map = {}
+        try:
+            initial_cap = trade_result['initial_capital']
+            for d, v in trade_result.get('equity_curve', []):
+                nav_map[pd.Timestamp(d).strftime('%Y-%m-%d')] = v
+        except Exception:
+            initial_cap = 0
         if trades:
             html_parts.append("""
     <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 系统买卖信号记录</h2>
     <table style="margin-bottom:20px;">
     <thead><tr>
         <th>信号日</th><th>方向</th><th>代码</th><th>名称</th>
-        <th>信号价</th><th>数量</th><th>金额</th><th>盈亏</th><th>原因</th>
+        <th>信号价</th><th>数量</th><th>金额</th><th>盈亏</th><th>累计盈亏</th><th>原因</th>
     </tr></thead>
     <tbody>""")
             for t in trades:
@@ -478,8 +486,18 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 pnl_css = ''
                 if t.direction == 'SELL':
                     pnl_css = 'color:#27ae60;' if pnl_sys > 0 else 'color:#e74c3c;'
+                # 累计盈亏: 按信号日取净值 (原教旨回测中信号日=成交日, 即当日收盘净值)
+                sig_date_str = t.signal_date.strftime('%Y-%m-%d')
+                cum_nav = nav_map.get(sig_date_str) if initial_cap else None
+                if cum_nav is None:
+                    cum_str = '-'
+                    cum_css = ''
+                else:
+                    cum_val = cum_nav / initial_cap - 1
+                    cum_str = f'{cum_val:+.1%}'
+                    cum_css = 'color:#27ae60;' if cum_val > 0 else 'color:#e74c3c;'
                 html_parts.append(f"""<tr>
-                    <td>{t.signal_date.strftime('%Y-%m-%d')}</td>
+                    <td>{sig_date_str}</td>
                     <td style="{dir_css}">{dir_label}</td>
                     <td><strong>{t.code}</strong></td>
                     <td>{t.name}</td>
@@ -487,6 +505,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                     <td>{t.shares}</td>
                     <td>¥{sig_price * t.shares:,.0f}</td>
                     <td style="{pnl_css}font-weight:600;">{pnl_str}</td>
+                    <td style="{cum_css}font-weight:600;">{cum_str}</td>
                     <td>{t.reason}</td>
                 </tr>""")
             html_parts.append("""
