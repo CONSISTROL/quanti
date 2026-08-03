@@ -856,7 +856,7 @@ def _html_head(backtest_date=None):
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
     background: #f0f2f5; color: #333; line-height: 1.6;
   }}
-  .container {{ max-width: 1200px; margin: 0 auto; padding: 24px; }}
+  .container {{ max-width: 1440px; margin: 0 auto; padding: 24px; }}
   h1 {{
     text-align: center; color: #1a1a2e; font-size: 28px;
     margin-bottom: 8px; padding-top: 10px;
@@ -897,16 +897,19 @@ def _html_head(backtest_date=None):
     box-shadow: 0 2px 8px rgba(0,0,0,0.06);
   }}
   th {{
-    background: #1a1a2e; color: white; padding: 12px 8px;
+    background: #1a1a2e; color: white; padding: 8px 8px;
     font-size: 13px; text-align: center; cursor: pointer;
     user-select: none;
   }}
   th:hover {{ background: #2a2a4e; }}
   td {{
-    padding: 9px 8px; text-align: center; font-size: 13px;
+    padding: 4px 8px; text-align: center; font-size: 13px;
     border-bottom: 1px solid #f0f0f0;
   }}
   tr:hover {{ background: #f8f9ff; }}
+  /* 系统买卖信号记录表: 日期/名称等短列禁止换行, 原因列(末列)保留换行 */
+  #sys-signals-table td {{ white-space: nowrap; }}
+  #sys-signals-table td:last-child {{ white-space: normal; }}
   .score-positive {{ color: #27ae60; font-weight: 600; }}
   .score-negative {{ color: #e74c3c; font-weight: 600; }}
   .rank-badge {{

@@ -181,7 +181,7 @@ def generate_echarts_report(combo, per_stock, output_path):
   .stat {{ background: rgba(255,255,255,.12); border-radius: 8px; padding: 10px 18px; min-width: 110px; }}
   .stat .v {{ font-size: 20px; font-weight: 700; }}
   .stat .l {{ font-size: 12px; opacity: .75; }}
-  .container {{ max-width: 1200px; margin: 20px auto; padding: 0 16px; }}
+  .container {{ max-width: 1440px; margin: 20px auto; padding: 0 16px; }}
   .card {{ background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 20px; margin-bottom: 20px; }}
   .card h2 {{ font-size: 15px; color: #1f2329; margin-bottom: 12px; }}
   .chart {{ width: 100%; height: 420px; }}
@@ -189,7 +189,9 @@ def generate_echarts_report(combo, per_stock, output_path):
   select {{ padding: 6px 12px; border: 1px solid #d9dde3; border-radius: 6px; font-size: 13px; background: #fff; }}
   .legend-hint {{ font-size: 12px; color: #86909c; margin-top: 6px; }}
   .trades {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-  .trades th, .trades td {{ padding: 8px 10px; border-bottom: 1px solid #eef1f4; text-align: left; }}
+  .trades th, .trades td {{ padding: 4px 10px; border-bottom: 1px solid #eef1f4; text-align: left; }}
+  .trades td {{ white-space: nowrap; }}
+  .trades td:last-child {{ white-space: normal; }}
   .trades th {{ background: #f7f8fa; color: #4e5969; font-weight: 600; white-space: nowrap; }}
   .trades tr:hover td {{ background: #fafbfc; }}
   .buy {{ color: #e8403a; font-weight: 600; }}
