@@ -19,15 +19,23 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 
-def _load_history_local():
-    """优先加载本地 hist 缓存 pickle (跳过 fetch_all_data 的全市场网络抓取)"""
+def _load_history_local(hist_file=''):
+    """优先加载本地 hist 缓存 pickle (跳过 fetch_all_data 的全市场网络抓取)
+    --hist-file 指定历史快照 (复现历史报告场景, 如 hist_batch_20260802.pkl)
+    """
     import glob
     import pickle
-    files = sorted(glob.glob(os.path.join('cache', 'hist_batch_*.pkl')))
-    if not files:
-        return None
-    p = files[-1]
-    print(f'  (本地历史缓存: {os.path.basename(p)})')
+    if hist_file:
+        p = hist_file if os.path.isabs(hist_file) else os.path.join('cache', hist_file)
+        if not os.path.exists(p):
+            print(f'  ✗ 指定的历史快照不存在: {p}')
+            return None
+    else:
+        files = sorted(glob.glob(os.path.join('cache', 'hist_batch_*.pkl')))
+        if not files:
+            return None
+        p = files[-1]
+    print(f'  (历史缓存: {os.path.basename(p)})')
     with open(p, 'rb') as f:
         hist = pickle.load(f)
     if isinstance(hist, dict):
@@ -35,7 +43,7 @@ def _load_history_local():
     return hist
 
 
-def main(config=None, days=0, limit=0):
+def main(config=None, days=0, limit=0, hist_file=''):
     from main import load_config
     config = config or load_config()
 
@@ -47,7 +55,7 @@ def main(config=None, days=0, limit=0):
 
     # ---- 1. 加载数据 (优先本地缓存, 回退 fetch_all_data) ----
     data = None
-    hist = _load_history_local()
+    hist = _load_history_local(hist_file)
     if hist is None:
         print('  (无本地历史缓存, 走 fetch_all_data 全市场抓取)')
         dt_cfg = config.get('data', {})
@@ -171,5 +179,6 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser()
     p.add_argument('--days', type=int, default=0)
     p.add_argument('--limit', type=int, default=0)
+    p.add_argument('--hist-file', default='', help='指定历史快照 (如 hist_batch_20260802.pkl, 复现历史报告场景)')
     a = p.parse_args()
-    sys.exit(main(days=a.days, limit=a.limit))
+    sys.exit(main(days=a.days, limit=a.limit, hist_file=a.hist_file))

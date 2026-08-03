@@ -729,9 +729,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                         match = scored_df[scored_df['code'].astype(str).str.zfill(6) == code]
                         if not match.empty:
                             name = str(match.iloc[0].get('name', ''))
-                    # 跳空高开: 开盘决策当日开盘价成交 (buy_price 从 ind['close'] 换成当日 open)
-                    buy_price = open_px if (strategy == 'gap_open' and open_px) else ind['close']
-                    buy_candidates.append((code, name, buy_price, score, reason, entry_type))
+                    buy_candidates.append((code, name, ind['close'], score, reason, entry_type))
 
             # 按信号强度排序, 买入前 available_slots 个
             buy_candidates.sort(key=lambda x: x[3], reverse=True)
