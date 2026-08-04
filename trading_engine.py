@@ -324,6 +324,17 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     equity_curve = []
     max_profit_tracker = {}  # {code: max_profit_seen}
 
+    # 预构建代码元数据 (rank/name) 与自选优先级映射 — 候选扫描每只股票每天查询,
+    # 避免循环内 pandas 全表布尔过滤 (全市场扫描时从~1ms/只降至~1us, 提速千倍)
+    code_meta = {}  # {6位code: (rank, name)}
+    if scored_df is not None and 'code' in scored_df.columns:
+        for _, row in scored_df.iterrows():
+            code_meta[str(row['code']).zfill(6)] = (
+                int(row.get('rank', 999)), str(row.get('name', '')))
+    wpri_map = {}
+    for k, v in config.get('watchlist_priority', {}).items():
+        wpri_map[str(k).zfill(6)] = int(v)
+
     # 凯利公式参数
     kelly_mode = config.get('kelly_mode', False)
     kelly_wins = []
@@ -638,16 +649,6 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
             today_str = today.strftime('%Y-%m-%d')
 
-            # 跳空高开策略: 预构建 K线 open 数组索引 (searchsorted 取当日开盘价, 开盘决策)
-            kline_open = {}
-            if strategy == 'gap_open':
-                for c in candidate_codes:
-                    s = pure_to_sina.get(c)
-                    hdf = history_dict.get(s) if s else None
-                    if hdf is not None and 'open' in hdf.columns and 'date' in hdf.columns:
-                        kline_open[c] = (hdf['date'].values.astype('datetime64[ns]'),
-                                         hdf['open'].values.astype(float))
-
             for code in candidate_codes:
                 if code in sold_today:
                     continue  # 当日已卖出 (当日禁买)
@@ -656,14 +657,6 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 sina = pure_to_sina.get(code)
                 if not sina:
                     continue
-
-                # 当日开盘价 (仅 gap_open 需要: 开盘决策, ctx['open'] 传给 buy_signal)
-                open_px = None
-                if strategy == 'gap_open' and code in kline_open:
-                    darr, oarr = kline_open[code]
-                    pos = int(np.searchsorted(darr, np.datetime64(today), side='right')) - 1
-                    if pos >= 0:
-                        open_px = float(oarr[pos])
 
                 # 优先使用预计算数据 (包含周线SKDJ)
                 ind = None
@@ -692,7 +685,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
                     ind = compute_indicators(closes, volumes_arr, highs_arr, lows_arr)
 
-                is_buy, score, reason = buy_signal_func(ind, code=code, open=open_px)
+                is_buy, score, reason = buy_signal_func(ind)
                 entry_type = 'swing'
 
                 if not is_buy and has_rebound:
@@ -706,29 +699,22 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     if is_rebound:
                         is_buy, score, reason, entry_type = True, 4, rebound_reason, 'rebound'
 
-                # 龙头加分: 综合排名TOP10额外+2分
-                if scored_df is not None and 'code' in scored_df.columns:
-                    match = scored_df[scored_df['code'].astype(str).str.zfill(6) == code]
-                    if not match.empty:
-                        rank = int(match.iloc[0].get('rank', 999))
-                        if rank <= 10:
-                            score += 2
-                            reason += '+龙头TOP10' if reason else '龙头TOP10'
+                # 龙头加分: 综合排名TOP10额外+2分 (code_meta 预构建, 避免循环内 pandas 过滤)
+                meta = code_meta.get(code)
+                if meta:
+                    rank = meta[0]
+                    if rank <= 10:
+                        score += 2
+                        reason += '+龙头TOP10' if reason else '龙头TOP10'
 
                 # 自选池优先级: config watchlist_priority 指定标的评分+n (与其他自选比时优先买入)
-                pri = config.get('watchlist_priority', {})
-                bonus = pri.get(code) or pri.get(str(code).zfill(6))
+                bonus = wpri_map.get(code)
                 if bonus:
-                    score += int(bonus)
+                    score += bonus
                     reason += f'+优先级{bonus}' if reason else f'优先级{bonus}'
 
                 if score >= min_buy_score:
-                    # 获取名称
-                    name = ''
-                    if scored_df is not None and 'code' in scored_df.columns:
-                        match = scored_df[scored_df['code'].astype(str).str.zfill(6) == code]
-                        if not match.empty:
-                            name = str(match.iloc[0].get('name', ''))
+                    name = meta[1] if meta else ''
                     buy_candidates.append((code, name, ind['close'], score, reason, entry_type))
 
             # 按信号强度排序, 买入前 available_slots 个
@@ -867,10 +853,9 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                         and not np.isnan(ma120) and close > ma120
                         and vr < 0.9):
                     nm = ''
-                    if scored_df is not None and 'code' in scored_df.columns:
-                        mt = scored_df[scored_df['code'].astype(str).str.zfill(6) == code]
-                        if not mt.empty:
-                            nm = str(mt.iloc[0].get('name', ''))
+                    meta = code_meta.get(code)
+                    if meta:
+                        nm = meta[1]
                     reason = f'动态龙头:SKDJ金叉(K={k:.0f})+缩量({vr:.1f}x)+均线多头'
                     wildcard_candidates.append((code, nm, close, 10, reason))
 
