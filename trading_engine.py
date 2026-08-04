@@ -219,6 +219,9 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
     # 从策略注册表加载策略 (config.json trading.strategy 配置)
     strat = get_strategy(strategy)
+    # config 可覆盖策略类阈值 (如 gap_open 的 gap_max: 排除涨停收盘股, 模拟涨停买不进)
+    if strategy == 'gap_open' and config.get('gap_max'):
+        strat.gap_max = float(config['gap_max'])
     buy_signal_func = strat.buy_signal
     sell_signal_func = strat.sell_signal
     from strategies.base import BaseStrategy  # 判断是否覆写了rebound
@@ -340,6 +343,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     sig_by_date = None
     if strategy == 'gap_open':
         gap_min = getattr(strat, 'gap_min', 0.07)
+        gap_max = getattr(strat, 'gap_max', 1.0)  # 涨停上限: 收盘涨幅<gap_max 才入信号 (config gap_max 覆盖, 模拟涨停买不进)
         sig_by_date = {}
         for code, sina in pure_to_sina.items():
             hdf = history_dict.get(sina)
@@ -358,6 +362,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             rise = np.zeros_like(closes)
             rise[mask] = closes[mask] / prev[mask] - 1
             mask &= rise >= gap_min
+            mask &= rise < gap_max
             if mask.any():
                 for i in np.nonzero(mask)[0]:
                     dstr = pd.Timestamp(dates[i]).strftime('%Y-%m-%d')

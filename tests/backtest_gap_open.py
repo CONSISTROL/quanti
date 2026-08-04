@@ -44,7 +44,7 @@ def _load_history_local(hist_file=''):
     return hist
 
 
-def main(config=None, days=0, limit=0, hist_file='', next_close=False):
+def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=0.0):
     from main import load_config
     config = config or load_config()
 
@@ -52,6 +52,8 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False):
     tr_cfg['strategy'] = 'gap_open'
     if next_close:
         tr_cfg['buy_next_close'] = True  # 信号次日尾盘(收盘价)买入, 卖出仍按持有到期当日尾盘
+    if max_rise > 0:
+        tr_cfg['gap_max'] = max_rise  # 排除收盘涨幅>=该阈值的股票 (如0.099=排除涨停收盘, 涨停买不进)
     from strategies import GapOpenStrategy, strategy_label
     tr_cfg.update(GapOpenStrategy.recommended)
     print(f'  策略: {strategy_label("gap_open")}')
@@ -215,5 +217,6 @@ if __name__ == '__main__':
     p.add_argument('--limit', type=int, default=0)
     p.add_argument('--hist-file', default='', help='指定历史快照 (如 hist_batch_20260802.pkl, 复现历史报告场景)')
     p.add_argument('--next-close', action='store_true', help='信号次日尾盘买入变体: T日收盘涨幅>=7%信号 → T+1尾盘(收盘价)买入 → T+2尾盘卖出')
+    p.add_argument('--max-rise', type=float, default=0.0, help='收盘涨幅上限 (排除涨停收盘买不进的股票, 如 0.099)')
     a = p.parse_args()
-    sys.exit(main(days=a.days, limit=a.limit, hist_file=a.hist_file, next_close=a.next_close))
+    sys.exit(main(days=a.days, limit=a.limit, hist_file=a.hist_file, next_close=a.next_close, max_rise=a.max_rise))
