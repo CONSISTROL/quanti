@@ -5,6 +5,7 @@
 """
 import os
 import sys
+import glob
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pickle
@@ -15,10 +16,21 @@ import numpy as np
 _CACHE = None
 
 
+def _latest_snapshot():
+    files = sorted(glob.glob('cache/hist_batch_*.pkl'))
+    if not files:
+        raise FileNotFoundError('未找到历史快照 cache/hist_batch_*.pkl, 请先运行 python main.py 生成数据缓存')
+    return files[-1]
+
+
 def _load_cache():
     global _CACHE
     if _CACHE is None:
-        _CACHE = pickle.load(open('cache/hist_batch_20260801.pkl', 'rb'))
+        path = 'cache/hist_batch_20260801.pkl'
+        if not os.path.exists(path):
+            path = _latest_snapshot()
+            print(f'  ✓ 指定快照不存在, 自动使用最新快照: {path}')
+        _CACHE = pickle.load(open(path, 'rb'))
     return _CACHE
 
 

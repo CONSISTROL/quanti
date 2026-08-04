@@ -6,6 +6,7 @@
 """
 import sys
 import os
+import glob
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pickle
@@ -26,6 +27,14 @@ def main(config=None, stock=None, strategy=None, cache_path='cache/hist_batch_20
     test_cfg = (config or {}).get('test', {})
     stock = stock or test_cfg.get('stock', '601857')
     strategy = strategy or test_cfg.get('strategy', 'reversal')
+
+    if not os.path.exists(cache_path):
+        files = sorted(glob.glob('cache/hist_batch_*.pkl'))
+        if not files:
+            print('  ✗ 未找到历史快照 cache/hist_batch_*.pkl, 请先运行 python main.py 生成数据缓存')
+            return 1
+        cache_path = files[-1]
+        print(f'  ✓ 指定快照不存在, 自动使用最新快照: {cache_path}')
 
     from indicator_cache import _incremental_indicators
     from strategies import get_strategy, strategy_label

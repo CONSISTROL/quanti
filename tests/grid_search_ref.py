@@ -1,13 +1,21 @@
 """参考策略参数网格搜索 (先>=6/7命中, 再最大化收益) — 支持动态/冻结周线两种视图"""
-import pickle, pandas as pd, numpy as np
-import os, sys
+import pickle, glob, os, sys
+import pandas as pd, numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from collections import deque
 from itertools import product
 
 
 def main(config=None):
-    hist = pickle.load(open('cache/hist_batch_20260731.pkl', 'rb'))
+    path = 'cache/hist_batch_20260731.pkl'
+    if not os.path.exists(path):
+        files = sorted(glob.glob('cache/hist_batch_*.pkl'))
+        if not files:
+            print('  ✗ 未找到历史快照 cache/hist_batch_*.pkl, 请先运行 python main.py 生成数据缓存')
+            return 1
+        path = files[-1]
+        print(f'  ✓ 指定快照不存在, 自动使用最新快照: {path}')
+    hist = pickle.load(open(path, 'rb'))
     df = None
     for k, v in hist.items():
         if k.endswith('601857'):
