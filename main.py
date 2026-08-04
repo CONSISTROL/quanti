@@ -365,12 +365,17 @@ def main():
                         all_dates.add(ts)
         trading_dates = sorted(all_dates)
 
-        precomputed = precompute_all_indicators(
-            data['history'], pure_to_sina, trading_dates,
-            cache_dir='cache',
-            start_date=bt_cfg.get('start_date', '2025-01-01'),
-            end_date=bt_cfg.get('end_date', '2026-07-27'),
-        )
+        if tr_cfg.get('strategy') == 'gap_open':
+            # 跳空高开策略: 信号由引擎向量化预筛 (收盘涨幅), 无需2GB指标缓存
+            precomputed = None
+            print('  ⚡ 跳空高开策略: 跳过指标预计算 (信号向量化预筛, 无2GB缓存加载)')
+        else:
+            precomputed = precompute_all_indicators(
+                data['history'], pure_to_sina, trading_dates,
+                cache_dir='cache',
+                start_date=bt_cfg.get('start_date', '2025-01-01'),
+                end_date=bt_cfg.get('end_date', '2026-07-27'),
+            )
 
         # 主报告负责"系统买卖信号记录" — 引擎同一次回测同时产出两种口径:
         #   信号账户 (signal_stats) = 信号日按信号价成交 → 主报告统计/系统买卖信号记录

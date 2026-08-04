@@ -119,7 +119,10 @@ def main(config=None, days=0, limit=0, hist_file=''):
     trading_dates = sorted(all_dates)
 
     cand_map = {c: pure_to_sina[c] for c in cands}
-    if limit:
+    if tr_cfg.get('strategy') == 'gap_open':
+        precomputed = None  # 跳空策略: 信号由引擎向量化预筛, 无需指标缓存
+        print('  ⚡ 跳过指标预计算 (信号向量化预筛)')
+    elif limit:
         # 调试模式: 直接计算子集指标 (不读写缓存文件, 避免覆盖全市场缓存)
         from indicator_cache import _incremental_indicators
         target_dates = {pd.Timestamp(d).strftime('%Y-%m-%d') for d in trading_dates}

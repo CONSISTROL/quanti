@@ -22,6 +22,7 @@ class GapOpenStrategy(BaseStrategy):
     name = 'gap_open'
     label = '跳空高开隔日轮动 (收盘涨幅>=7%买入, 次日收盘卖出, 涨停收盘复刻版)'
     description = '全市场扫描收盘涨幅>=7%的股票(主体为涨停收盘), 收盘价买入, 持有1个交易日收盘卖出'
+    gap_min = GAP_MIN  # 引擎信号预筛阈值 (向量化预筛与 buy_signal 共用, 避免口径漂移)
 
     # 引擎/主流程在该策略下使用的推荐参数 (main.py 应用, 不写入 config.json)
     recommended = {

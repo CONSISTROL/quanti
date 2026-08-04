@@ -335,6 +335,36 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     for k, v in config.get('watchlist_priority', {}).items():
         wpri_map[str(k).zfill(6)] = int(v)
 
+    # 跳空高开策略: 信号完全预计算 (向量化收盘涨幅, 逆排索引 {date_str: [code,...]})
+    # 候选扫描只遍历当天有信号的股票, 避免全市场×全天逐只调用 buy_signal
+    sig_by_date = None
+    if strategy == 'gap_open':
+        gap_min = getattr(strat, 'gap_min', 0.07)
+        sig_by_date = {}
+        for code, sina in pure_to_sina.items():
+            hdf = history_dict.get(sina)
+            if hdf is None or 'close' not in hdf.columns or 'date' not in hdf.columns:
+                continue
+            closes = hdf['close'].values.astype(float)
+            dates = hdf['date'].values
+            if len(closes) < 2:
+                continue
+            prev = np.empty_like(closes)
+            prev[0] = 0.0
+            prev[1:] = closes[:-1]
+            mask = (closes > 0) & (prev > 0)
+            if not mask.any():
+                continue
+            rise = np.zeros_like(closes)
+            rise[mask] = closes[mask] / prev[mask] - 1
+            mask &= rise >= gap_min
+            if mask.any():
+                for i in np.nonzero(mask)[0]:
+                    dstr = pd.Timestamp(dates[i]).strftime('%Y-%m-%d')
+                    sig_by_date.setdefault(dstr, []).append(code)
+        n_sig = sum(len(v) for v in sig_by_date.values())
+        print(f'  信号预筛: {n_sig} 个买入信号, 覆盖 {len(sig_by_date)} 个交易日 (逆排索引)')
+
     # 凯利公式参数
     kelly_mode = config.get('kelly_mode', False)
     kelly_wins = []
@@ -471,10 +501,11 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                 if cash < px * 100:
                     # 现金不足: 卖出持仓中最高位的 (K>75) 换资金
                     sold_hp = False
+                    pcom = precomputed or {}
                     for pos in sorted(positions, key=lambda p: (
-                            precomputed.get(p.code, {}).get(today.strftime('%Y-%m-%d'), {}).get('skdj_k', 0)),
+                            pcom.get(p.code, {}).get(today.strftime('%Y-%m-%d'), {}).get('skdj_k', 0)),
                                       reverse=True):
-                        pdata = precomputed.get(pos.code, {}).get(today.strftime('%Y-%m-%d'), {})
+                        pdata = pcom.get(pos.code, {}).get(today.strftime('%Y-%m-%d'), {})
                         if pdata.get('skdj_k', 50) > 75:
                             hp = opens.get(pos.code, pdata.get('skdj_close', pdata.get('close', 0)))
                             cash += pos.shares * hp
@@ -649,7 +680,10 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
             today_str = today.strftime('%Y-%m-%d')
 
-            for code in candidate_codes:
+            # 跳空高开策略: 只遍历当天有信号的股票 (逆排索引, 通常几十只 vs 全市场2732只)
+            scan_codes = sig_by_date.get(today_str, []) if sig_by_date is not None else candidate_codes
+
+            for code in scan_codes:
                 if code in sold_today:
                     continue  # 当日已卖出 (当日禁买)
                 if code in held_codes and add_fn is None:
@@ -671,19 +705,28 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     if hist is None:
                         continue
 
-                    mask = hist['date'] <= today
-                    if mask.sum() < 60:
-                        continue
-                    idx = mask.sum() - 1
-                    closes = hist['close'].values.astype(float)[:idx+1]
-                    volumes_arr = hist['volume'].values.astype(float)[:idx+1] if 'volume' in hist.columns else None
-                    highs_arr = hist['high'].values.astype(float)[:idx+1] if 'high' in hist.columns else None
-                    lows_arr = hist['low'].values.astype(float)[:idx+1] if 'low' in hist.columns else None
+                    if strategy == 'gap_open':
+                        # 跳空策略只需收盘价: 轻量构造 (避免全量指标计算)
+                        mask = hist['date'] <= today
+                        if mask.sum() < 2:
+                            continue
+                        idx = mask.sum() - 1
+                        ind = {'close': float(hist['close'].values[idx]),
+                               'prev_close': float(hist['close'].values[idx - 1])}
+                    else:
+                        mask = hist['date'] <= today
+                        if mask.sum() < 60:
+                            continue
+                        idx = mask.sum() - 1
+                        closes = hist['close'].values.astype(float)[:idx+1]
+                        volumes_arr = hist['volume'].values.astype(float)[:idx+1] if 'volume' in hist.columns else None
+                        highs_arr = hist['high'].values.astype(float)[:idx+1] if 'high' in hist.columns else None
+                        lows_arr = hist['low'].values.astype(float)[:idx+1] if 'low' in hist.columns else None
 
-                    if len(closes) < 60:
-                        continue
+                        if len(closes) < 60:
+                            continue
 
-                    ind = compute_indicators(closes, volumes_arr, highs_arr, lows_arr)
+                        ind = compute_indicators(closes, volumes_arr, highs_arr, lows_arr)
 
                 is_buy, score, reason = buy_signal_func(ind)
                 entry_type = 'swing'
@@ -724,9 +767,10 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             # 无现金换仓: 有买入候选但现金不足 → 卖出持仓中最高位的 (K>75) 换资金
             # (次日成交模式: 换仓顺延到T+1执行, 见第0b步)
             if not (exec_next_open or exec_next_close) and picks and cash < min(p[2] for p in picks) * 100:
+                pcom = precomputed or {}
                 for pos in sorted(positions, key=lambda p: (
-                        precomputed.get(p.code, {}).get(today_str, {}).get('skdj_k', 0)), reverse=True):
-                    pdata = precomputed.get(pos.code, {}).get(today_str, {})
+                        pcom.get(p.code, {}).get(today_str, {}).get('skdj_k', 0)), reverse=True):
+                    pdata = pcom.get(pos.code, {}).get(today_str, {})
                     if pdata.get('skdj_k', 50) > 75:
                         hp = pdata.get('skdj_close', pdata.get('close', 0))
                         cash += pos.shares * hp
@@ -793,7 +837,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         # ---- 2b. 动态龙头发现: 有预计算时每天扫,无预计算时3天扫一次 ----
         available_slots = max_positions - len(positions)
         scan_freq = 1 if precomputed else 3  # 有缓存天天扫,没缓存3天一次
-        if available_slots > 0 and cash > initial_capital * 0.05 and day_idx % scan_freq == 0:
+        if strategy != 'gap_open' and available_slots > 0 and cash > initial_capital * 0.05 and day_idx % scan_freq == 0:
             wildcard_candidates = []
             held_codes = {p.code for p in positions}
             today_str = today.strftime('%Y-%m-%d')
