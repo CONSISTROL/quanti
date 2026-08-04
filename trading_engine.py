@@ -1279,12 +1279,19 @@ def print_trade_summary(result):
     print()
 
 
-def generate_equity_chart(result):
-    """生成收益曲线图 (ECharts) — 净值+回撤+买卖点 (优先信号账户口径: 系统买卖信号)"""
+def generate_equity_chart(result, scope='signal'):
+    """生成收益曲线图 (ECharts) — 净值+回撤+买卖点
+    scope='signal': 信号账户口径 (信号日/信号价成交, 系统买卖信号) — 默认
+    scope='exec':   执行账户口径 (实际执行日/执行价成交, 用户A操作)
+    """
     if result is None:
         return ''
-    eq_curve = result.get('signal_equity_curve') or result['equity_curve']
-    st = result.get('signal_stats') or result['stats']
+    if scope == 'exec':
+        eq_curve = result.get('equity_curve') or result.get('signal_equity_curve') or []
+        st = result.get('stats') or result.get('signal_stats') or {}
+    else:
+        eq_curve = result.get('signal_equity_curve') or result.get('equity_curve') or []
+        st = result.get('signal_stats') or result.get('stats') or {}
     if not eq_curve:
         return ''
 
@@ -1302,22 +1309,29 @@ def generate_equity_chart(result):
     final_ret = stats['total_return']
     line_color = UP if final_ret >= 0 else DOWN
 
-    # 买卖点 (信号账户口径: 标记于信号日/信号价)
+    # 买卖点 (按口径: 信号账户标记于信号日/信号价, 执行账户标记于执行日/执行价)
     buy_pts, sell_pts = [], []
     for t in result['trades']:
-        d = pd.Timestamp(getattr(t, 'signal_date', None) or t.date).strftime('%Y-%m-%d')
+        if scope == 'exec':
+            d = pd.Timestamp(t.date).strftime('%Y-%m-%d')
+            px = t.price
+        else:
+            d = pd.Timestamp(getattr(t, 'signal_date', None) or t.date).strftime('%Y-%m-%d')
+            px = getattr(t, 'signal_price', None) or t.price
         if d in dates:
             idx = dates.index(d)
-            sig_px = getattr(t, 'signal_price', None) or t.price
             if t.direction == 'BUY':
                 buy_pts.append({'name': '买入', 'value': [d, round(nav[idx], 4)],
-                                'code': t.code, 'price': sig_px, 'reason': t.reason})
+                                'code': t.code, 'price': px, 'reason': t.reason})
             else:
-                pnl_sig = getattr(t, 'pnl_signal', None)
-                if pnl_sig is None:
+                if scope == 'exec':
                     pnl_sig = t.pnl_pct
+                else:
+                    pnl_sig = getattr(t, 'pnl_signal', None)
+                    if pnl_sig is None:
+                        pnl_sig = t.pnl_pct
                 sell_pts.append({'name': '卖出', 'value': [d, round(nav[idx], 4)],
-                                 'code': t.code, 'price': sig_px, 'pnl': round(pnl_sig * 100, 1),
+                                 'code': t.code, 'price': px, 'pnl': round(pnl_sig * 100, 1),
                                  'reason': t.reason})
 
     option = {

@@ -165,18 +165,22 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False):
           f"| 交易: {st['total_trades']}笔 | 胜率: {st['win_rate']:.0%}")
     print_trade_summary(result)
 
-    # ---- 5. HTML报告 (复用主报告) ----
+    # ---- 5. HTML报告 (两份: 信号口径 + 用户操作执行口径) ----
     from report_generator import generate_html_report
     from datetime import datetime
-    output_path = f'report_gap_open_{datetime.now().strftime("%Y%m%d")}.html'
-    try:
-        actual_path = generate_html_report(
-            None, 30, {}, output_path,
-            backtest_result=result, trade_result=result,
-        )
-        print(f'\n  ✅ HTML报告: {os.path.abspath(actual_path)}')
-    except Exception as e:
-        print(f'\n  ⚠ HTML报告生成失败: {e}')
+    stamp = datetime.now().strftime('%Y%m%d')
+    for scope, tag, label in (('signal', 'signal', '信号口径'),
+                              ('exec', 'exec', '用户操作执行口径')):
+        output_path = f'report_gap_open_{tag}_{stamp}.html'
+        try:
+            actual_path = generate_html_report(
+                None, 30, {}, output_path,
+                backtest_result=result, trade_result=result,
+                trade_scope=scope,
+            )
+            print(f'  ✅ {label}HTML报告: {os.path.abspath(actual_path)}')
+        except Exception as e:
+            print(f'\n  ⚠ {label}HTML报告生成失败: {e}')
     return 0
 
 

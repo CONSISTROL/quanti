@@ -140,7 +140,11 @@ def print_terminal_report(scored_df, top_n, weights, spot_filtered=None,
 
 def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=None,
                          backtest_result=None, backtest_date=None, fwd_summary=None,
-                         stock_details=None, trade_result=None):
+                         stock_details=None, trade_result=None,
+                         trade_scope='signal'):
+    """生成HTML报告。
+    trade_scope: 'signal'=系统买卖信号口径(信号日按信号价成交) / 'exec'=用户操作执行口径(实际成交价)。
+    双口径分别调用即可生成两份报告 (signal/exec)。"""
     """生成交互式HTML报告（ECharts图表）"""
     # 处理scored_df为None的情况 (个股回测模式)
     if scored_df is None:
@@ -418,87 +422,103 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     if trade_result:
         stats = trade_result['stats']
         trades = trade_result['trades']
+        # trade_scope: 'signal'=系统买卖信号口径(信号日按信号价成交) / 'exec'=用户操作执行口径(实际成交价)
+        sig_stats = trade_result.get('signal_stats') or stats
+        card_stats = sig_stats if trade_scope == 'signal' else stats
+        scope_title = ('系统买卖信号口径: 信号当日按信号价成交' if trade_scope == 'signal'
+                       else '用户操作执行口径: 实际执行价成交')
         equity_chart_html = ''
         try:
             from trading_engine import generate_equity_chart
-            equity_chart_html = generate_equity_chart(trade_result)
+            equity_chart_html = generate_equity_chart(trade_result, scope=trade_scope)
         except Exception:
             pass
 
-        # 统计卡片 (系统买卖信号口径: 信号当日按信号价成交的收益)
-        sig_stats = trade_result.get('signal_stats') or stats
-        html_parts.append("""
-    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📈 波段交易回测 <span style="font-size:12px;color:#888;">(系统买卖信号口径: 信号当日按信号价成交)</span></h2>
+        # 统计卡片 (按口径)
+        html_parts.append(f"""
+    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📈 波段交易回测 <span style="font-size:12px;color:#888;">({scope_title})</span></h2>
     <div class="cards">""")
-        ret_css = 'color:#27ae60;' if sig_stats['total_return'] > 0 else 'color:#e74c3c;'
+        ret_css = 'color:#27ae60;' if card_stats['total_return'] > 0 else 'color:#e74c3c;'
         html_parts.append(f"""
         <div class="card"><div class="card-label">总收益率</div>
-            <div class="card-value" style="{ret_css}">{sig_stats['total_return']:+.1%}</div></div>
+            <div class="card-value" style="{ret_css}">{card_stats['total_return']:+.1%}</div></div>
         <div class="card"><div class="card-label">年化收益</div>
-            <div class="card-value" style="{ret_css}">{sig_stats['annual_return']:+.1%}</div></div>
+            <div class="card-value" style="{ret_css}">{card_stats['annual_return']:+.1%}</div></div>
         <div class="card"><div class="card-label">Sharpe</div>
-            <div class="card-value">{sig_stats['sharpe']:.2f}</div></div>
+            <div class="card-value">{card_stats['sharpe']:.2f}</div></div>
         <div class="card"><div class="card-label">最大回撤</div>
-            <div class="card-value" style="color:#e74c3c;">{sig_stats['max_drawdown']:.1%}</div></div>
+            <div class="card-value" style="color:#e74c3c;">{card_stats['max_drawdown']:.1%}</div></div>
         <div class="card"><div class="card-label">最大回撤天数</div>
-            <div class="card-value" style="color:#e74c3c;">{sig_stats.get('max_drawdown_days', 0)} 天</div></div>
+            <div class="card-value" style="color:#e74c3c;">{card_stats.get('max_drawdown_days', 0)} 天</div></div>
         <div class="card"><div class="card-label">交易次数</div>
-            <div class="card-value">{sig_stats['total_trades']}</div></div>
+            <div class="card-value">{card_stats['total_trades']}</div></div>
         <div class="card"><div class="card-label">胜率</div>
-            <div class="card-value">{sig_stats['win_rate']:.0%}</div></div>
+            <div class="card-value">{card_stats['win_rate']:.0%}</div></div>
         <div class="card"><div class="card-label">盈亏比</div>
-            <div class="card-value">{f"{sig_stats['profit_loss_ratio']:.2f}" if sig_stats['avg_loss'] != 0 else '∞'}</div></div>
+            <div class="card-value">{f"{card_stats['profit_loss_ratio']:.2f}" if card_stats['avg_loss'] != 0 else '∞'}</div></div>
         <div class="card"><div class="card-label">最终资金</div>
-            <div class="card-value" style="{ret_css}">¥{sig_stats['final_value']:,.0f}</div></div>
+            <div class="card-value" style="{ret_css}">¥{card_stats['final_value']:,.0f}</div></div>
     </div>""")
 
-        # 收益曲线
+        # 收益曲线 (按口径)
         if equity_chart_html:
             html_parts.append(f"""
     <div class="chart-container" style="margin-bottom:20px;">
         {equity_chart_html}
     </div>""")
 
-        # 操作记录表 (系统买卖信号: 价格/盈亏按信号日信号价口径)
-        # 累计盈亏 = 信号日信号账户净值/初始资金-1 (信号当日按信号价成交)
+        # 操作记录表 (按口径: 信号账户=信号日/信号价, 执行账户=执行日/执行价)
+        # 累计盈亏 = 对应口径账户净值/初始资金-1
         nav_map = {}
         try:
             initial_cap = trade_result['initial_capital']
-            sig_curve = trade_result.get('signal_equity_curve') or trade_result.get('equity_curve', [])
-            for d, v in sig_curve:
+            curve = (trade_result.get('signal_equity_curve')
+                     if trade_scope == 'signal' else trade_result.get('equity_curve', []))
+            for d, v in curve:
                 nav_map[pd.Timestamp(d).strftime('%Y-%m-%d')] = v
         except Exception:
             initial_cap = 0
         if trades:
-            html_parts.append("""
-    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📋 系统买卖信号记录</h2>
-    <table id="sys-signals-table" style="margin-bottom:20px;">
+            tbl_title = '📋 系统买卖信号记录' if trade_scope == 'signal' else '📋 用户A操作记录 (实际执行价成交)'
+            tbl_id = 'sys-signals-table' if trade_scope == 'signal' else 'user-ops-table'
+            date_hdr = '信号日' if trade_scope == 'signal' else '执行日'
+            px_hdr = '信号价' if trade_scope == 'signal' else '执行价'
+            html_parts.append(f"""
+    <h2 style="margin:24px 0 12px;color:#1a1a2e;">{tbl_title}</h2>
+    <table id="{tbl_id}" style="margin-bottom:20px;">
     <thead><tr>
-        <th>信号日</th><th>方向</th><th>代码</th><th>名称</th>
-        <th>信号价</th><th>数量</th><th>金额</th><th>盈亏</th><th>累计盈亏</th><th>回撤天数</th><th>原因</th>
+        <th>{date_hdr}</th><th>方向</th><th>代码</th><th>名称</th>
+        <th>{px_hdr}</th><th>数量</th><th>金额</th><th>盈亏</th><th>累计盈亏</th><th>回撤天数</th><th>原因</th>
     </tr></thead>
     <tbody>""")
             for t in trades:
                 dir_css = 'color:#27ae60;font-weight:600;' if t.direction == 'BUY' else 'color:#e74c3c;font-weight:600;'
                 dir_label = '买入' if t.direction == 'BUY' else '卖出'
-                # 信号口径: 价格 = 信号日收盘价, 盈亏 = 按信号价计算的收益 (非延迟成交时与执行口径相同)
-                sig_price = getattr(t, 'signal_price', None) or t.price
-                sig_shares = getattr(t, 'signal_shares', None)
-                if sig_shares is None:
-                    sig_shares = t.shares
-                pnl_sys = getattr(t, 'pnl_signal', None)
-                if pnl_sys is None:
-                    pnl_sys = t.pnl_pct
-                pnl_str = f'{pnl_sys:+.1%}' if t.direction == 'SELL' else '-'
+                if trade_scope == 'signal':
+                    # 信号口径: 价格 = 信号日收盘价, 盈亏 = 按信号价计算的收益 (非延迟成交时与执行口径相同)
+                    row_date_str = t.signal_date.strftime('%Y-%m-%d')
+                    row_px = getattr(t, 'signal_price', None) or t.price
+                    row_shares = getattr(t, 'signal_shares', None)
+                    if row_shares is None:
+                        row_shares = t.shares
+                    row_pnl = getattr(t, 'pnl_signal', None)
+                    if row_pnl is None:
+                        row_pnl = t.pnl_pct
+                else:
+                    # 执行口径: 价格/盈亏按实际执行日执行价 (成交模式决定的成交价)
+                    row_date_str = t.date.strftime('%Y-%m-%d')
+                    row_px = t.price
+                    row_shares = t.shares
+                    row_pnl = t.pnl_pct
+                pnl_str = f'{row_pnl:+.1%}' if t.direction == 'SELL' else '-'
                 pnl_css = ''
                 if t.direction == 'SELL':
-                    pnl_css = 'color:#27ae60;' if pnl_sys > 0 else 'color:#e74c3c;'
-                # 回撤天数 = 持仓期间最高收盘价日 → 卖出信号日的交易日数 (信号账户口径)
+                    pnl_css = 'color:#27ae60;' if row_pnl > 0 else 'color:#e74c3c;'
+                # 回撤天数 = 持仓期间最高收盘价日 → 卖出信号日的交易日数 (仅信号账户口径计算)
                 dd_val = getattr(t, 'drawdown_days', None)
-                dd_str = f'{dd_val}' if (t.direction == 'SELL' and dd_val is not None) else '-'
-                # 累计盈亏: 按信号日取信号账户净值 (信号当日按信号价成交的收益)
-                sig_date_str = t.signal_date.strftime('%Y-%m-%d')
-                cum_nav = nav_map.get(sig_date_str) if initial_cap else None
+                dd_str = f'{dd_val}' if (t.direction == 'SELL' and dd_val is not None and trade_scope == 'signal') else '-'
+                # 累计盈亏: 按交易日期取对应口径账户净值
+                cum_nav = nav_map.get(row_date_str) if initial_cap else None
                 if cum_nav is None:
                     cum_str = '-'
                     cum_css = ''
@@ -507,21 +527,25 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                     cum_str = f'{cum_val:+.1%}'
                     cum_css = 'color:#27ae60;' if cum_val > 0 else 'color:#e74c3c;'
                 html_parts.append(f"""<tr>
-                    <td>{sig_date_str}</td>
+                    <td>{row_date_str}</td>
                     <td style="{dir_css}">{dir_label}</td>
                     <td><strong>{t.code}</strong></td>
                     <td>{t.name}</td>
-                    <td>{sig_price:.2f}</td>
-                    <td>{sig_shares}</td>
-                    <td>¥{sig_price * sig_shares:,.0f}</td>
+                    <td>{row_px:.2f}</td>
+                    <td>{row_shares}</td>
+                    <td>¥{row_px * row_shares:,.0f}</td>
                     <td style="{pnl_css}font-weight:600;">{pnl_str}</td>
                     <td style="{cum_css}font-weight:600;">{cum_str}</td>
                     <td>{dd_str}</td>
                     <td>{t.reason}</td>
                 </tr>""")
-            html_parts.append("""
+            if trade_scope == 'signal':
+                footnote = '本表 = 系统买卖信号记录 — 价格/盈亏按<strong>信号日信号价口径</strong>(信号当日收盘价成交的收益, 与成交模式无关)'
+            else:
+                footnote = '本表 = 用户A操作记录 — 价格/盈亏按<strong>实际执行价口径</strong>(成交模式决定的实际成交价, 如 exec_next_close 次日尾盘价 / buy_next_close 信号次日尾盘价)'
+            html_parts.append(f"""
     </tbody></table>
-    <p style="color:#999;font-size:12px;margin-top:-12px;">本表 = 系统买卖信号记录 — 价格/盈亏按<strong>信号日信号价口径</strong>(信号当日收盘价成交的收益, 与成交模式无关); 用户A按次日执行价成交的价格/盈亏见自选池轮动分析报告"用户A操作记录"</p>""")
+    <p style="color:#999;font-size:12px;margin-top:-12px;">{footnote}</p>""")
 
         # 当前持仓
         if trade_result.get('final_positions'):

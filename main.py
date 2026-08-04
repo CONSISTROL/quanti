@@ -381,8 +381,8 @@ def main():
         #   信号账户 (signal_stats) = 信号日按信号价成交 → 主报告统计/系统买卖信号记录
         #   执行账户 (stats)        = config 成交模式 (exec_next_close 次日尾盘价) → 用户A操作记录(见自选池报告)
         if tr_cfg.get('strategy') == 'gap_open':
-            # 跳空高开策略: 开盘决策→当日开盘价买入, 次日收盘卖出 (无延迟, 双口径自然一致)
-            print('  成交模式: 开盘决策→当日开盘价买入, 次日收盘卖出 (跳空高开隔日轮动)')
+            # 跳空高开策略: 信号当日收盘价买入, 次日收盘卖出 (无延迟时双口径自然一致)
+            print('  成交模式: 信号当日收盘价买入, 次日收盘卖出 (跳空高开隔日轮动)')
         else:
             exec_mode = ('次日尾盘价成交' if tr_cfg.get('exec_next_close') else
                          '次日开盘价成交' if tr_cfg.get('exec_next_open') else
@@ -411,14 +411,20 @@ def main():
         print("━" * 52)
 
         top_n = sc_cfg.get('top', 30)
-        output_path = f"report_{datetime.now().strftime('%Y%m%d')}.html"
-
-        actual_path = generate_html_report(
-            scored_df, top_n, weights, output_path,
-            spot_filtered=data['spot_filtered'],
-            trade_result=result,
-        )
-        print(f"  ✅ HTML报告: {os.path.abspath(actual_path)}")
+        if result:
+            # 回测生成两份报告: 信号口径(信号日按信号价成交) + 用户操作执行口径(实际成交价)
+            report_specs = (('signal', 'signal', '信号口径'), ('exec', 'exec', '用户操作执行口径'))
+        else:
+            report_specs = (('signal', '', ''),)  # 无回测结果: 仅默认主报告
+        for scope, tag, label in report_specs:
+            output_path = f"report_{tag}_{datetime.now().strftime('%Y%m%d')}.html".replace('__', '_')
+            actual_path = generate_html_report(
+                scored_df, top_n, weights, output_path,
+                spot_filtered=data['spot_filtered'],
+                trade_result=result,
+                trade_scope=scope,
+            )
+            print(f"  ✅ {label}HTML报告: {os.path.abspath(actual_path)}")
 
         # 今日建议
         if result and result['final_positions']:
