@@ -12,6 +12,7 @@
   python tests/backtest_gap_open.py --limit 300  # 只扫前300只股票 (开发调试)
 """
 import os
+import pickle
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -145,9 +146,32 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False):
         )
 
     # ---- 4. 回测 ----
+    # 股票名称: 从最新 spot 缓存构建最小 scored_df (code/name 列), 引擎据此填充交易记录名称
+    spot_df = None
+    import glob
+    spot_files = sorted(glob.glob(os.path.join('cache', 'spot_*.pkl')))
+    if spot_files:
+        try:
+            with open(spot_files[-1], 'rb') as f:
+                spot_df = pickle.load(f)
+        except Exception:
+            spot_df = None
+    name_df = None
+    if spot_df is not None and '代码' in spot_df.columns and '名称' in spot_df.columns:
+        from data_fetcher import _code_pure
+        rows = []
+        for _, r in spot_df.iterrows():
+            try:
+                rows.append({'code': _code_pure(str(r['代码'])), 'name': str(r['名称'])})
+            except Exception:
+                continue
+        if rows:
+            name_df = pd.DataFrame(rows)
+            print(f'  (股票名称: 取自 {os.path.basename(spot_files[-1])} 共 {len(rows)} 只)')
+
     from trading_engine import run_swing_backtest, print_trade_summary
     result = run_swing_backtest(
-        hist, None, tr_cfg,
+        hist, name_df, tr_cfg,
         start_date_str=start, end_date_str=end,
         precomputed=precomputed,
     )

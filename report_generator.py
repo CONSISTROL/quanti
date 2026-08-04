@@ -642,8 +642,8 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     bar.className = 'filter-bar';
     tbl.parentNode.insertBefore(bar, tbl);
     var pageSize = 30, page = 0, pager = null;
-    /* 系统买卖信号记录表不分页, 全部显示 (交易流水滚动查看更方便) */
-    if (rows.length > 30 && tbl.id !== 'sys-signals-table') {
+    /* 不分页: 全部行显示 (交易流水滚动查看更方便) */
+    if (false) {
       pager = document.createElement('div');
       pager.className = 'filter-pager';
       tbl.parentNode.insertBefore(pager, tbl.nextSibling);
