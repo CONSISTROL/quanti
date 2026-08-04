@@ -43,12 +43,14 @@ def _load_history_local(hist_file=''):
     return hist
 
 
-def main(config=None, days=0, limit=0, hist_file=''):
+def main(config=None, days=0, limit=0, hist_file='', next_close=False):
     from main import load_config
     config = config or load_config()
 
     tr_cfg = dict(config['trading'])
     tr_cfg['strategy'] = 'gap_open'
+    if next_close:
+        tr_cfg['buy_next_close'] = True  # 信号次日尾盘(收盘价)买入, 卖出仍按持有到期当日尾盘
     from strategies import GapOpenStrategy, strategy_label
     tr_cfg.update(GapOpenStrategy.recommended)
     print(f'  策略: {strategy_label("gap_open")}')
@@ -155,7 +157,8 @@ def main(config=None, days=0, limit=0, hist_file=''):
 
     st = result['stats']
     print('\n' + '═' * 90)
-    print('  🚀 跳空高开隔日轮动 (开盘决策→当日开盘价买入, 次日收盘卖出)')
+    mode = '信号日收盘买入, 次日收盘卖出' if not next_close else '信号次日尾盘(收盘价)买入, 再持有1个交易日尾盘卖出'
+    print(f'  🚀 跳空高开隔日轮动 ({mode})')
     print('═' * 90)
     print(f"    总收益率: {st['total_return']:+.2%} | 年化: {st['annual_return']:+.2%} "
           f"| Sharpe: {st['sharpe']:.2f} | 最大回撤: {st['max_drawdown']:.1%} "
@@ -183,5 +186,6 @@ if __name__ == '__main__':
     p.add_argument('--days', type=int, default=0)
     p.add_argument('--limit', type=int, default=0)
     p.add_argument('--hist-file', default='', help='指定历史快照 (如 hist_batch_20260802.pkl, 复现历史报告场景)')
+    p.add_argument('--next-close', action='store_true', help='信号次日尾盘买入变体: T日收盘涨幅>=7%信号 → T+1尾盘(收盘价)买入 → T+2尾盘卖出')
     a = p.parse_args()
-    sys.exit(main(days=a.days, limit=a.limit, hist_file=a.hist_file))
+    sys.exit(main(days=a.days, limit=a.limit, hist_file=a.hist_file, next_close=a.next_close))

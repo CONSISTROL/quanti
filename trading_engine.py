@@ -388,9 +388,12 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     exec_next_open = config.get('exec_next_open', False)
     buy_next_open = config.get('buy_next_open', False)
     exec_next_close = config.get('exec_next_close', False)
+    buy_next_close = config.get('buy_next_close', False)  # 仅买入延迟: T日信号 → T+1尾盘(收盘价)买入, 卖出仍按持有到期当日尾盘
     if strategy == 'gap_open':
-        # 跳空高开是"开盘决策"策略: 必须当日开盘价成交, 延迟模式会失去跳空意义
-        exec_next_open = exec_next_close = buy_next_open = False
+        # 跳空高开以收盘价成交: 开盘价延迟模式与收盘涨幅信号口径不符 (开盘价≠信号参考价)
+        # exec_next_close 会被 config.json(手动交易模拟)继承, 回测默认禁用 (保持当日收盘买卖)
+        # buy_next_close 不会从 config 继承, 仅显式传入时生效 (信号次日尾盘买入变体)
+        exec_next_open = buy_next_open = exec_next_close = False
     pending_sells = []    # [(pos, reason, sig_date, sig_price)] — T日收盘卖出信号 → T+1开盘执行
     pending_reduces = []  # [(pos, reason, ratio, sig_date, sig_price)] — T日收盘减仓信号 → T+1开盘执行
     pending_buys = []     # [(code, name, score, reason, entry_type, sig_date, sig_price)] — T日收盘买入信号 → T+1开盘执行
@@ -406,6 +409,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         print('  成交模式: 次日开盘价成交 (T日收盘信号 → T+1日早盘开盘价买卖)')
     elif exec_next_close:
         print('  成交模式: 次日尾盘(收盘价)成交 (T日收盘信号 → T+1日尾盘价买卖)')
+    elif buy_next_close:
+        print('  成交模式: 买入按次日尾盘收盘价 (T日收盘信号 → T+1尾盘买入, 卖出仍按持有到期当日尾盘)')
     elif buy_next_open:
         print('  成交模式: 买入按次日开盘价 (卖出仍按信号当日收盘价)')
 
@@ -433,19 +438,23 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             need_codes = ({p.code for p, _, _, _ in pending_sells}
                           | {p.code for p, _, _, _, _ in pending_reduces}
                           | {c for c, *_ in pending_buys})
-            opens = {}
-            px_col = 'close' if exec_next_close else 'open'
+            opens = {}      # 卖出执行价 (sell_col)
+            buy_opens = {}  # 买入执行价 (buy_col, buy_next_close 时独立于卖出列)
+            sell_col = 'close' if exec_next_close else 'open'
+            buy_col = 'close' if (exec_next_close or buy_next_close) else 'open'
             for code in need_codes:
                 sina = pure_to_sina.get(code)
                 hdf = history_dict.get(sina) if sina else None
-                if hdf is not None and px_col in hdf.columns:
+                if hdf is not None and sell_col in hdf.columns:
                     m = hdf['date'] <= today
                     if m.sum() > 0:
-                        opens[code] = float(hdf[px_col].values[m][-1])
+                        opens[code] = float(hdf[sell_col].values[m][-1])
+                        buy_opens[code] = float(hdf[buy_col].values[m][-1]) if buy_col in hdf.columns else opens[code]
                 if code not in opens and precomputed and code in precomputed:
                     pd_ = precomputed[code].get(today.strftime('%Y-%m-%d'))
                     if pd_:
-                        opens[code] = float(pd_.get(px_col, pd_.get('close', 0)))
+                        opens[code] = float(pd_.get(sell_col, pd_.get('close', 0)))
+                        buy_opens[code] = float(pd_.get(buy_col, pd_.get('close', 0)))
 
             def _px(code, fallback):
                 p = opens.get(code)
@@ -495,7 +504,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             for code, name, score, reason, entry_type, sig_date, sig_price in pending_buys:
                 if code in sold_today or avail <= 0:
                     continue
-                px = opens.get(code)
+                px = buy_opens.get(code)
                 if px is None or px <= 0:
                     continue
                 if cash < px * 100:
@@ -766,7 +775,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
             # 无现金换仓: 有买入候选但现金不足 → 卖出持仓中最高位的 (K>75) 换资金
             # (次日成交模式: 换仓顺延到T+1执行, 见第0b步)
-            if not (exec_next_open or exec_next_close) and picks and cash < min(p[2] for p in picks) * 100:
+            if not (exec_next_open or exec_next_close or buy_next_close) and picks and cash < min(p[2] for p in picks) * 100:
                 pcom = precomputed or {}
                 for pos in sorted(positions, key=lambda p: (
                         pcom.get(p.code, {}).get(today_str, {}).get('skdj_k', 0)), reverse=True):
@@ -785,8 +794,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
             # 动态仓位: 单只上限position_pct, 按强弱分比例缩放 (行情弱→分低→轻仓)
             # 已持仓低位标的 → 加仓补足到单只上限; 新标的 → 按强弱分分配
-            if exec_next_open or buy_next_open or exec_next_close:
-                # 次日成交模式: 买入信号挂起, 次日成交价执行 (见第0b步)
+            if exec_next_open or buy_next_open or exec_next_close or buy_next_close:
+                # 延迟成交模式: 买入信号挂起, 次日成交价执行 (见第0b步)
                 for code, name, buy_price, score, reason, entry_type in picks:
                     pending_buys.append((code, name, score, reason, entry_type, today, buy_price))
                 picks = []
@@ -904,7 +913,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     wildcard_candidates.append((code, nm, close, 10, reason))
 
             for code, name, buy_price, score, reason in wildcard_candidates[:available_slots]:
-                if exec_next_open or buy_next_open or exec_next_close:
+                if exec_next_open or buy_next_open or exec_next_close or buy_next_close:
                     pending_buys.append((code, name, score, reason, 'swing', today, buy_price))
                     continue
                 alloc = cash * (calc_kelly_fraction() if kelly_mode else position_pct)
