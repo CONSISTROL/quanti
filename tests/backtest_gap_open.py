@@ -203,7 +203,7 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=
     stamp = datetime.now().strftime('%Y%m%d')
     for scope, tag, label in (('signal', 'signal', '信号口径'),
                               ('exec', 'exec', '用户操作执行口径')):
-        output_path = f'report_gap_open_{tag}_{stamp}.html'
+        output_path = f'report_{strategy_name}_{tag}_{stamp}.html'
         try:
             actual_path = generate_html_report(
                 None, 30, {}, output_path,
