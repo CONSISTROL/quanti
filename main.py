@@ -365,8 +365,8 @@ def main():
                         all_dates.add(ts)
         trading_dates = sorted(all_dates)
 
-        if tr_cfg.get('strategy') == 'gap_open':
-            # 跳空高开策略: 信号由引擎向量化预筛 (收盘涨幅), 无需2GB指标缓存
+        if tr_cfg.get('strategy') in ('gap_open', 'gap_open_open'):
+            # 跳空高开策略: 信号由引擎向量化预筛 (收盘涨幅/开盘跳空), 无需2GB指标缓存
             precomputed = None
             print('  ⚡ 跳空高开策略: 跳过指标预计算 (信号向量化预筛, 无2GB缓存加载)')
         else:
@@ -382,7 +382,10 @@ def main():
         #   执行账户 (stats)        = config 成交模式 (exec_next_close 次日尾盘价) → 用户A操作记录(见自选池报告)
         if tr_cfg.get('strategy') == 'gap_open':
             # 跳空高开策略: 信号当日收盘价买入, 次日收盘卖出 (无延迟时双口径自然一致)
-            print('  成交模式: 信号当日收盘价买入, 次日收盘卖出 (跳空高开隔日轮动)')
+            print('  成交模式: 信号当日收盘价买入, 次日收盘卖出 (跳空高开隔日轮动, 报告复刻)')
+        elif tr_cfg.get('strategy') == 'gap_open_open':
+            # 米筐模板开盘口径: 开盘集合竞价决策 → 当日开盘价买入, 次日尾盘收盘价卖出
+            print('  成交模式: 开盘集合竞价决策 → 当日开盘价买入, 次日尾盘收盘价卖出 (米筐模板开盘口径)')
         else:
             exec_mode = ('次日尾盘价成交' if tr_cfg.get('exec_next_close') else
                          '次日开盘价成交' if tr_cfg.get('exec_next_open') else

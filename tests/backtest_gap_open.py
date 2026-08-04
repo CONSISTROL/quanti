@@ -44,19 +44,20 @@ def _load_history_local(hist_file=''):
     return hist
 
 
-def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=0.0):
+def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=0.0, strategy_name='gap_open'):
     from main import load_config
     config = config or load_config()
 
     tr_cfg = dict(config['trading'])
-    tr_cfg['strategy'] = 'gap_open'
+    tr_cfg['strategy'] = strategy_name
     if next_close:
         tr_cfg['buy_next_close'] = True  # 信号次日尾盘(收盘价)买入, 卖出仍按持有到期当日尾盘
     if max_rise > 0:
         tr_cfg['gap_max'] = max_rise  # 排除收盘涨幅>=该阈值的股票 (如0.099=排除涨停收盘, 涨停买不进)
-    from strategies import GapOpenStrategy, strategy_label
-    tr_cfg.update(GapOpenStrategy.recommended)
-    print(f'  策略: {strategy_label("gap_open")}')
+    from strategies import GapOpenStrategy, GapOpenOpenStrategy, strategy_label
+    strat_cls = GapOpenOpenStrategy if strategy_name == 'gap_open_open' else GapOpenStrategy
+    tr_cfg.update(strat_cls.recommended)
+    print(f'  策略: {strategy_label(strategy_name)}')
 
     # ---- 1. 加载数据 (优先本地缓存, 回退 fetch_all_data) ----
     data = None
@@ -124,7 +125,7 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=
     trading_dates = sorted(all_dates)
 
     cand_map = {c: pure_to_sina[c] for c in cands}
-    if tr_cfg.get('strategy') == 'gap_open':
+    if tr_cfg.get('strategy') in ('gap_open', 'gap_open_open'):
         precomputed = None  # 跳空策略: 信号由引擎向量化预筛, 无需指标缓存
         print('  ⚡ 跳过指标预计算 (信号向量化预筛)')
     elif limit:
@@ -183,7 +184,12 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=
 
     st = result['stats']
     print('\n' + '═' * 90)
-    mode = '信号日收盘买入, 次日收盘卖出' if not next_close else '信号次日尾盘(收盘价)买入, 再持有1个交易日尾盘卖出'
+    if strategy_name == 'gap_open_open':
+        mode = '开盘集合竞价决策→开盘价买入, 次日尾盘卖出 (米筐模板口径)'
+    elif not next_close:
+        mode = '信号日收盘买入, 次日收盘卖出'
+    else:
+        mode = '信号次日尾盘(收盘价)买入, 再持有1个交易日尾盘卖出'
     print(f'  🚀 跳空高开隔日轮动 ({mode})')
     print('═' * 90)
     print(f"    总收益率: {st['total_return']:+.2%} | 年化: {st['annual_return']:+.2%} "
@@ -218,5 +224,8 @@ if __name__ == '__main__':
     p.add_argument('--hist-file', default='', help='指定历史快照 (如 hist_batch_20260802.pkl, 复现历史报告场景)')
     p.add_argument('--next-close', action='store_true', help='信号次日尾盘买入变体: T日收盘涨幅>=7%信号 → T+1尾盘(收盘价)买入 → T+2尾盘卖出')
     p.add_argument('--max-rise', type=float, default=0.0, help='收盘涨幅上限 (排除涨停收盘买不进的股票, 如 0.099)')
+    p.add_argument('--strategy', default='gap_open', choices=['gap_open', 'gap_open_open'],
+                   help='gap_open=收盘涨幅复刻版(默认) / gap_open_open=米筐模板开盘口径(开盘跳空>=3%+放量, 开盘价买入)')
     a = p.parse_args()
-    sys.exit(main(days=a.days, limit=a.limit, hist_file=a.hist_file, next_close=a.next_close, max_rise=a.max_rise))
+    sys.exit(main(days=a.days, limit=a.limit, hist_file=a.hist_file, next_close=a.next_close,
+                  max_rise=a.max_rise, strategy_name=a.strategy))

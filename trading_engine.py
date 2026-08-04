@@ -220,7 +220,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     # 从策略注册表加载策略 (config.json trading.strategy 配置)
     strat = get_strategy(strategy)
     # config 可覆盖策略类阈值 (如 gap_open 的 gap_max: 排除涨停收盘股, 模拟涨停买不进)
-    if strategy == 'gap_open' and config.get('gap_max'):
+    if strategy in ('gap_open', 'gap_open_open') and config.get('gap_max'):
         strat.gap_max = float(config['gap_max'])
     buy_signal_func = strat.buy_signal
     sell_signal_func = strat.sell_signal
@@ -338,12 +338,15 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     for k, v in config.get('watchlist_priority', {}).items():
         wpri_map[str(k).zfill(6)] = int(v)
 
-    # 跳空高开策略: 信号完全预计算 (向量化收盘涨幅, 逆排索引 {date_str: [code,...]})
+    # 跳空高开策略: 信号完全预计算 (向量化涨幅, 逆排索引 {date_str: [code,...]})
     # 候选扫描只遍历当天有信号的股票, 避免全市场×全天逐只调用 buy_signal
+    # gap_open:   收盘涨幅口径 (close/prev-1, 报告复刻)
+    # gap_open_open: 开盘跳空口径 (open/prev-1, 米筐模板) + 放量确认 (5日均量, 主力净流入代理)
     sig_by_date = None
-    if strategy == 'gap_open':
+    if strategy in ('gap_open', 'gap_open_open'):
         gap_min = getattr(strat, 'gap_min', 0.07)
-        gap_max = getattr(strat, 'gap_max', 1.0)  # 涨停上限: 收盘涨幅<gap_max 才入信号 (config gap_max 覆盖, 模拟涨停买不进)
+        gap_max = getattr(strat, 'gap_max', 1.0)  # 涨幅上限 (config gap_max 覆盖, 模拟涨停买不进)
+        vol_min = getattr(strat, 'vol_min', 1.5)
         sig_by_date = {}
         for code, sina in pure_to_sina.items():
             hdf = history_dict.get(sina)
@@ -356,13 +359,34 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             prev = np.empty_like(closes)
             prev[0] = 0.0
             prev[1:] = closes[:-1]
-            mask = (closes > 0) & (prev > 0)
+            if strategy == 'gap_open_open':
+                # 开盘跳空: 开盘价/昨收-1 (集合竞价定盘价)
+                if 'open' not in hdf.columns:
+                    continue
+                base = hdf['open'].values.astype(float)
+            else:
+                base = closes
+            mask = (base > 0) & (prev > 0)
             if not mask.any():
                 continue
             rise = np.zeros_like(closes)
-            rise[mask] = closes[mask] / prev[mask] - 1
+            rise[mask] = base[mask] / prev[mask] - 1
             mask &= rise >= gap_min
             mask &= rise < gap_max
+            if strategy == 'gap_open_open' and 'volume' in hdf.columns:
+                # 放量确认: 当日量/5日均量 >= vol_min (主力净流入代理)
+                vols = hdf['volume'].values.astype(float)
+                cs = np.cumsum(vols)
+                avg5 = np.empty_like(vols)
+                avg5[0] = vols[0]
+                if len(vols) > 1:
+                    avg5[1:min(5, len(vols))] = cs[1:min(5, len(vols))] / np.arange(2, min(5, len(vols)) + 1)
+                if len(vols) >= 6:
+                    avg5[5:] = (cs[5:] - cs[:-5]) / 5.0
+                vr = np.zeros_like(vols)
+                okv = avg5 > 0
+                vr[okv] = vols[okv] / avg5[okv]
+                mask &= vr >= vol_min
             if mask.any():
                 for i in np.nonzero(mask)[0]:
                     dstr = pd.Timestamp(dates[i]).strftime('%Y-%m-%d')
@@ -394,9 +418,9 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     buy_next_open = config.get('buy_next_open', False)
     exec_next_close = config.get('exec_next_close', False)
     buy_next_close = config.get('buy_next_close', False)  # 仅买入延迟: T日信号 → T+1尾盘(收盘价)买入, 卖出仍按持有到期当日尾盘
-    if strategy == 'gap_open':
-        # 跳空高开以收盘价成交: 开盘价延迟模式与收盘涨幅信号口径不符 (开盘价≠信号参考价)
-        # exec_next_close 会被 config.json(手动交易模拟)继承, 回测默认禁用 (保持当日收盘买卖)
+    if strategy in ('gap_open', 'gap_open_open'):
+        # 跳空策略当日成交: 开盘价延迟模式与信号口径不符 (信号日≠成交日)
+        # exec_next_close 会被 config.json(手动交易模拟)继承, 回测默认禁用 (保持当日成交)
         # buy_next_close 不会从 config 继承, 仅显式传入时生效 (信号次日尾盘买入变体)
         exec_next_open = buy_next_open = exec_next_close = False
     pending_sells = []    # [(pos, reason, sig_date, sig_price)] — T日收盘卖出信号 → T+1开盘执行
@@ -410,7 +434,11 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     min_holding_days = int(config.get('min_holding_days', 0))
     death_cross_confirm = int(config.get('death_cross_confirm', 0))
     death_streak = {}     # {code: 连续死叉天数}
-    if exec_next_open:
+    if strategy == 'gap_open_open':
+        print('  成交模式: 开盘价成交 (开盘集合竞价决策 → 当日开盘价买入, 次日尾盘收盘价卖出, 米筐模板口径)')
+    elif strategy == 'gap_open':
+        print('  成交模式: 收盘价成交 (当日收盘决策 → 收盘价买入, 次日收盘价卖出)')
+    elif exec_next_open:
         print('  成交模式: 次日开盘价成交 (T日收盘信号 → T+1日早盘开盘价买卖)')
     elif exec_next_close:
         print('  成交模式: 次日尾盘(收盘价)成交 (T日收盘信号 → T+1日尾盘价买卖)')
@@ -719,14 +747,21 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     if hist is None:
                         continue
 
-                    if strategy == 'gap_open':
-                        # 跳空策略只需收盘价: 轻量构造 (避免全量指标计算)
+                    if strategy in ('gap_open', 'gap_open_open'):
+                        # 跳空策略轻量构造 (避免全量指标计算)
+                        # gap_open: 只需收盘价; gap_open_open: 还需开盘价(跳空口径)+量比(主力净流入代理)
                         mask = hist['date'] <= today
                         if mask.sum() < 2:
                             continue
                         idx = mask.sum() - 1
                         ind = {'close': float(hist['close'].values[idx]),
                                'prev_close': float(hist['close'].values[idx - 1])}
+                        if 'open' in hist.columns:
+                            ind['open'] = float(hist['open'].values[idx])
+                        if 'volume' in hist.columns:
+                            vols = hist['volume'].values.astype(float)[:idx+1]
+                            v5 = vols[-5:].mean() if len(vols) >= 5 else vols.mean()
+                            ind['vol_ratio'] = float(vols[-1] / v5) if v5 > 0 else 1.0
                     else:
                         mask = hist['date'] <= today
                         if mask.sum() < 60:
@@ -772,7 +807,10 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
 
                 if score >= min_buy_score:
                     name = meta[1] if meta else ''
-                    buy_candidates.append((code, name, ind['close'], score, reason, entry_type))
+                    # 成交价: buy_at_open(米筐模板开盘口径)=当日开盘价, 默认=当日收盘价
+                    buy_px = (ind.get('open', ind['close'])
+                              if config.get('buy_at_open') else ind['close'])
+                    buy_candidates.append((code, name, buy_px, score, reason, entry_type))
 
             # 按信号强度排序, 买入前 available_slots 个
             buy_candidates.sort(key=lambda x: x[3], reverse=True)
@@ -851,7 +889,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         # ---- 2b. 动态龙头发现: 有预计算时每天扫,无预计算时3天扫一次 ----
         available_slots = max_positions - len(positions)
         scan_freq = 1 if precomputed else 3  # 有缓存天天扫,没缓存3天一次
-        if strategy != 'gap_open' and available_slots > 0 and cash > initial_capital * 0.05 and day_idx % scan_freq == 0:
+        if strategy not in ('gap_open', 'gap_open_open') and available_slots > 0 and cash > initial_capital * 0.05 and day_idx % scan_freq == 0:
             wildcard_candidates = []
             held_codes = {p.code for p in positions}
             today_str = today.strftime('%Y-%m-%d')

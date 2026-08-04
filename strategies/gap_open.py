@@ -53,3 +53,61 @@ class GapOpenStrategy(BaseStrategy):
         if holding_days >= HOLD_DAYS:
             return True, f'持有{HOLD_DAYS}天到期'
         return False, ''
+
+
+# ============================================================
+# 米筐模板开盘口径复刻版 (GapOpenOpen)
+# ============================================================
+
+GAP_OPEN_MIN = 0.03    # 开盘跳空阈值: 开盘价/昨收 - 1 >= 3% (集合竞价定盘价)
+VOL_MIN = 1.5          # 放量确认: 当日成交量/5日均量 >= 1.5 (主力净流入的代理, 无历史资金流数据)
+
+
+class GapOpenOpenStrategy(BaseStrategy):
+    """跳空高开隔日轮动 — 米筐模板开盘口径复刻版
+
+    来源: 米筐模板 (get_iwencai "跳空高开大于3%；主力净流入；低估值；市值小于200亿")
+    本地替代: 全市场扫描, 开盘跳空>=3% (开盘价/昨收-1, 集合竞价定盘价) + 放量确认
+    (vol_ratio>=1.5 代理主力净流入); 低估值/市值条件跳过 (无历史数据, 避免前视偏差)
+
+    执行方式 (与模板一致):
+      选股: 开盘集合竞价 (09:25定盘价) — 开盘跳空>=3%
+      买入: 当日开盘价成交 (模板 09:30 市价单 ≈ 开盘价)
+      卖出: 持有满1个交易日尾盘(收盘价)卖出 (模板 before_close 14:57)
+      仓位: 5只等分 (每笔=当前现金×20%)
+    """
+    name = 'gap_open_open'
+    label = '跳空高开隔日轮动 (开盘跳空>=3%+放量买入, 次日尾盘卖出, 米筐模板开盘口径复刻版)'
+    description = '全市场扫描开盘跳空>=3%且放量的股票(主力净流入代理), 开盘价买入, 持有1个交易日尾盘卖出'
+    gap_min = GAP_OPEN_MIN  # 引擎信号预筛阈值 (向量化预筛与 buy_signal 共用)
+    vol_min = VOL_MIN       # 放量阈值 (引擎预筛 + buy_signal 共用)
+
+    # 引擎/主流程在该策略下使用的推荐参数
+    recommended = {
+        'max_positions': 5,         # 5只等分 (模板 context.max_size = 5)
+        'full_position': False,
+        'position_pct': 0.2,
+        'min_buy_score': 5,
+        'buy_at_open': True,        # 当日开盘价成交 (模板 09:30 开盘买入)
+    }
+
+    def buy_signal(self, ind, **ctx):
+        """开盘跳空 >= 3% 且放量 (开盘集合竞价定盘价决策, 开盘价成交; 与米筐模板一致)
+        主力净流入无历史数据, 用 vol_ratio>=1.5 放量代理"""
+        open_px = ind.get('open', 0)
+        prev_close = ind.get('prev_close', 0)
+        if open_px <= 0 or prev_close <= 0:
+            return False, 0, '无开盘/昨收数据'
+        gap = open_px / prev_close - 1
+        if gap < getattr(self, 'gap_min', GAP_OPEN_MIN):
+            return False, 0, f'开盘跳空不足({gap:.2%})'
+        vol_ratio = ind.get('vol_ratio', 1.0)
+        if vol_ratio < getattr(self, 'vol_min', VOL_MIN):
+            return False, 0, f'未放量({vol_ratio:.1f}x, 主力净流入代理)'
+        return True, 8, f'开盘跳空{gap:.1%}+放量{vol_ratio:.1f}x'
+
+    def sell_signal(self, ind, entry_price, holding_days, max_profit_seen=0):
+        """持有满1个交易日尾盘(收盘价)卖出 (模板 before_close 定时器)"""
+        if holding_days >= HOLD_DAYS:
+            return True, f'持有{HOLD_DAYS}天到期'
+        return False, ''
