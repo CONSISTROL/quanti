@@ -433,7 +433,8 @@ def main():
         if result and result['final_positions']:
             print(f"\n  💡 当前持仓建议:")
             for pos in result['final_positions']:
-                print(f"    {pos.code} {pos.name} | 成本 ¥{pos.entry_price:.2f} | "
+                from trading_engine import fmt_px
+                print(f"    {pos.code} {pos.name} | 成本 ¥{fmt_px(pos.entry_price)} | "
                       f"{pos.shares}股 | 投入 ¥{pos.capital:,.0f}")
         elif result:
             print(f"\n  💡 当前空仓，等待买入信号")

@@ -18,6 +18,7 @@
 """
 from data_fetcher import _code_pure
 from sell_price_forecast import next_sell_prices, next_buy_prices
+from trading_engine import fmt_px
 
 
 def build_nextday_plan(hist, precomputed, names, config, strategy, scored_df, positions):
@@ -113,20 +114,20 @@ def print_nextday_plan(plan):
         for h in holds:
             fp = h['forecast']
             pnl = (fp['现价'] / h['entry'] - 1) if h['entry'] > 0 else 0
-            print(f"\n  📦 持仓 {h['code']} {h['name']}  成本 {h['entry']:.3f}  "
-                  f"现价 {fp['现价']:.3f}  ({pnl:+.1%})")
+            print(f"\n  📦 持仓 {h['code']} {h['name']}  成本 {fmt_px(h['entry'])}  "
+                  f"现价 {fmt_px(fp['现价'])}  ({pnl:+.1%})")
             if h['今日卖出']:
                 print(f"    🚨 今日收盘已触发卖出 ({h['卖出原因']}) → 明日开盘优先卖出")
                 continue
             if fp['趋势价'] is not None:
-                print(f"    · 收盘 ≤ {fp['趋势价']:.3f} → 卖出 (跌破MA20趋势转弱)")
-            print(f"    · 收盘 ≤ {fp['止损价']:.3f} → 卖出 (成本-5%止损)")
+                print(f"    · 收盘 ≤ {fmt_px(fp['趋势价'])} → 卖出 (跌破MA20趋势转弱)")
+            print(f"    · 收盘 ≤ {fmt_px(fp['止损价'])} → 卖出 (成本-5%止损)")
             if fp['死叉价'] is not None:
-                print(f"    · 收盘 ≥ {fp['死叉价']:.3f} → 卖出 (SKDJ高位死叉)")
+                print(f"    · 收盘 ≥ {fmt_px(fp['死叉价'])} → 卖出 (SKDJ高位死叉)")
             if fp['安全低'] is not None and fp['安全高'] is not None:
-                print(f"    ✅ 持有区间: {fp['安全低']:.3f} ~ {fp['安全高']:.3f} 之间收盘 → 继续持有")
+                print(f"    ✅ 持有区间: {fmt_px(fp['安全低'])} ~ {fmt_px(fp['安全高'])} 之间收盘 → 继续持有")
             elif fp['安全低'] is not None:
-                print(f"    ✅ 持有区间: 收盘 > {fp['安全低']:.3f} → 继续持有")
+                print(f"    ✅ 持有区间: 收盘 > {fmt_px(fp['安全低'])} → 继续持有")
     else:
         print('\n  📦 当前无持仓 (空仓) — 等待候选标的买入信号')
 
@@ -139,11 +140,11 @@ def print_nextday_plan(plan):
             if bp['已触发']:
                 print(f"       ✅ 今日收盘已满足买入条件 → 明日开盘价买入即可")
             elif bp['方向'] == 'above':
-                print(f"       ⚠ 明日收盘 ≥ {bp['触发价']:.3f} → 触发买入 (追涨)")
+                print(f"       ⚠ 明日收盘 ≥ {fmt_px(bp['触发价'])} → 触发买入 (追涨)")
             elif bp['方向'] == 'below':
-                print(f"       ⚠ 明日收盘 ≤ {bp['触发价']:.3f} → 触发买入 (超跌)")
+                print(f"       ⚠ 明日收盘 ≤ {fmt_px(bp['触发价'])} → 触发买入 (超跌)")
             elif bp['方向'] == 'both':
-                print(f"       ⚠ 明日收盘 ≥ {bp['触发价']:.3f} 或超跌 → 触发买入")
+                print(f"       ⚠ 明日收盘 ≥ {fmt_px(bp['触发价'])} 或超跌 → 触发买入")
             else:
                 print(f"       ➖ 明日 ±20% 内无触发价, 继续观察")
     else:

@@ -12,6 +12,16 @@ from factor_model import FACTOR_GROUPS
 from report_echarts import echarts_script, UP, DOWN, GRID, TEXT, BLUE, ORANGE, GRAY
 
 
+def fmt_px(v):
+    """价格按原始精度显示 (最多3位小数, 去尾零) — ETF/LOF 3位小数不丢失"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return '0'
+    s = f'{f:.3f}'.rstrip('0').rstrip('.')
+    return s
+
+
 def _display_width(s):
     """计算字符串在终端中的显示宽度（CJK字符占2列）"""
     width = 0
@@ -123,8 +133,8 @@ def print_terminal_report(scored_df, top_n, weights, spot_filtered=None,
             sl = row.get('sell_low', np.nan)
             sh = row.get('sell_high', np.nan)
 
-            buy_str = f"{bl:.2f}~{bh:.2f}" if pd.notna(bl) and pd.notna(bh) else "  -"
-            sell_str = f"{sl:.2f}~{sh:.2f}" if pd.notna(sl) and pd.notna(sh) else "  -"
+            buy_str = f"{fmt_px(bl)}~{fmt_px(bh)}" if pd.notna(bl) and pd.notna(bh) else "  -"
+            sell_str = f"{fmt_px(sl)}~{fmt_px(sh)}" if pd.notna(sl) and pd.notna(sh) else "  -"
             line += f"  {buy_str:>12}  {sell_str:>12}"
 
         print(line)
@@ -411,7 +421,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 <td><strong>{s['rank']}</strong></td>
                 <td><strong>{s['code']}</strong></td>
                 <td>{s['name']}</td>
-                <td>{s['price']:.2f}</td>
+                <td>{fmt_px(s['price'])}</td>
                 {_fwd_cell(s.get('fwd_5'))}{_fwd_cell(s.get('fwd_10'))}
                 {_fwd_cell(s.get('fwd_20'))}{_fwd_cell(s.get('fwd_60'))}
                 {_fwd_cell(s.get('fwd_today'))}
@@ -531,7 +541,7 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                     <td style="{dir_css}">{dir_label}</td>
                     <td><strong>{t.code}</strong></td>
                     <td>{t.name}</td>
-                    <td>{row_px:.2f}</td>
+                    <td>{fmt_px(row_px)}</td>
                     <td>{row_shares}</td>
                     <td>¥{row_px * row_shares:,.0f}</td>
                     <td style="{pnl_css}font-weight:600;">{pnl_str}</td>
@@ -581,8 +591,8 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
                 html_parts.append(f"""<tr>
                     <td><strong>{code}</strong></td>
                     <td>{name}</td>
-                    <td>¥{entry_price:.2f}</td>
-                    <td>¥{cur:.2f}</td>
+                    <td>¥{fmt_px(entry_price)}</td>
+                    <td>¥{fmt_px(cur)}</td>
                     <td>{shares}</td>
                     <td style="{css}">{sign}¥{fpnl:,.0f}</td>
                     <td style="{css}">{sign}{fpct:.1%}</td>
@@ -1213,8 +1223,8 @@ def _build_table(top_df):
             sh = row.get('sell_high', np.nan)
             pe_pct = row.get('pe_percentile', np.nan)
 
-            buy_str = f'{bl:.2f}~{bh:.2f}' if pd.notna(bl) and pd.notna(bh) else '-'
-            sell_str = f'{sl:.2f}~{sh:.2f}' if pd.notna(sl) and pd.notna(sh) else '-'
+            buy_str = f'{fmt_px(bl)}~{fmt_px(bh)}' if pd.notna(bl) and pd.notna(bh) else '-'
+            sell_str = f'{fmt_px(sl)}~{fmt_px(sh)}' if pd.notna(sl) and pd.notna(sh) else '-'
             pe_str = f'{pe_pct:.0f}%' if pd.notna(pe_pct) else '-'
 
             # 估值颜色
@@ -1233,7 +1243,7 @@ def _build_table(top_df):
             <td><strong>{str(row.get('code', '')).zfill(6)}</strong></td>
             <td>{row.get('name', '')}</td>
             <td>{sector}</td>
-            <td>{row.get('price', 0):.2f}</td>
+            <td>{fmt_px(row.get('price', 0))}</td>
             <td><strong>{row.get('composite_score', 0):+.2f}</strong></td>
             {_cell('value')}{_cell('growth')}{_cell('quality')}
             {_cell('momentum')}{_cell('risk')}

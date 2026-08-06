@@ -160,10 +160,11 @@ def main(config=None):
                 sina = sina_map.get(pos.code)
                 if not sina:
                     continue
+                from trading_engine import fmt_px
                 fp = next_sell_prices(hist[sina], pos.entry_price, strat)
                 pnl = (fp['现价'] / pos.entry_price - 1) if pos.entry_price > 0 else 0
-                print(f"\n  {pos.code} {names.get(pos.code, '')}  成本 {pos.entry_price:.3f}  "
-                      f"现价 {fp['现价']:.3f}  ({pnl:+.1%})")
+                print(f"\n  {pos.code} {names.get(pos.code, '')}  成本 {fmt_px(pos.entry_price)}  "
+                      f"现价 {fmt_px(fp['现价'])}  ({pnl:+.1%})")
                 if fp['趋势价'] is not None:
                     print(f"    ⚠ 趋势转弱  : 明日收盘 ≤ {fp['趋势价']:.3f} → 卖出 (跌破MA20且MA5<MA20)")
                 print(f"    ⚠ 止损线    : 明日收盘 ≤ {fp['止损价']:.3f} → 卖出 (成本-5%)")

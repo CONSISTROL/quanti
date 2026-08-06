@@ -19,6 +19,16 @@ from datetime import datetime, timedelta
 from strategies import get_strategy, strategy_label
 
 
+def fmt_px(v):
+    """价格按原始精度显示 (最多3位小数, 去尾零) — ETF/LOF 3位小数不丢失"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return '0'
+    s = f'{f:.3f}'.rstrip('0').rstrip('.')
+    return s
+
+
 # ============================================================
 # 技术指标计算
 # ============================================================
@@ -1313,7 +1323,7 @@ def print_trade_summary(result):
         pos_str = f'{position_ratio:.0%}'
 
         print(f"  {d_str:>12} {dir_label:>4} {t.code:<8} {t.name:<8} "
-              f"{t.price:>8.2f} {t.shares:>6d} {t.amount:>10,.0f} {pnl_str:>7} {cum_str:>7} "
+              f"{fmt_px(t.price):>8} {t.shares:>6d} {t.amount:>10,.0f} {pnl_str:>7} {cum_str:>7} "
               f"¥{total_value:>8,.0f} {pos_str:>5}  {t.reason}")
 
     # 当前持仓 (含浮动收益)
@@ -1328,7 +1338,7 @@ def print_trade_summary(result):
             float_pct = (current_price / pos.entry_price - 1) if pos.entry_price > 0 else 0
             pnl_css = '+' if float_pct >= 0 else ''
             total_float_pnl += float_pnl
-            print(f"    {pos.code:<8} {pos.name:<8} {pos.entry_price:>8.2f} {current_price:>8.2f} "
+            print(f"    {pos.code:<8} {pos.name:<8} {fmt_px(pos.entry_price):>8} {fmt_px(current_price):>8} "
                   f"{pos.shares:>6d} {pnl_css}{float_pnl:>9,.0f} {pnl_css}{float_pct:>7.1%} ¥{pos.capital:>10,.0f}")
         print("    " + "─" * 80)
         total_css = '+' if total_float_pnl >= 0 else ''
