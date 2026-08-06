@@ -119,14 +119,48 @@ def logit_pred(X, w):
 
 
 def equity_stats(daily_ret):
-    """日收益序列 → 净值/年化/Sharpe/最大回撤/胜率"""
+    """日收益序列 → 净值/年化/Sharpe/最大回撤(幅度+峰谷日数+收复日数)/最长水下/胜率
+
+    返回: (eq, ann, sharpe, dd, win,
+           dd_p2t, dd_t2r, dd_recovered,  # 最大回撤: 峰值→谷底日数, 谷底→收复日数, 是否已收复
+           longest_close, open_days)      # 最长水下(已收复), 当前水下日数(0=在新高)
+    日数均为交易日; 回撤期 = 净值跌破前高 → 收复前高 (未收复计到样本末)
+    """
     eq = float(np.prod(1 + daily_ret))
     ann = float((1 + daily_ret).prod() ** (252 / len(daily_ret)) - 1)
     sharpe = float(daily_ret.mean() / daily_ret.std() * np.sqrt(252)) if daily_ret.std() > 0 else 0.0
     nav = np.cumprod(1 + daily_ret)
-    dd = float((nav / np.maximum.accumulate(nav) - 1).min())
     win = float((daily_ret > 0).mean())
-    return eq, ann, sharpe, dd, win
+
+    # 逐段跟踪: 每段 = 峰值 → 谷底 → 收复前高
+    periods = []  # (谷底/前高-1, 峰值idx, 谷底idx, 收复idx/样本末, 是否收复)
+    prev_max, peak_i, trough_i, trough_val = nav[0], 0, 0, nav[0]
+    for i in range(1, len(nav)):
+        if nav[i] >= prev_max:
+            if trough_val < prev_max - 1e-15:
+                periods.append((trough_val / prev_max - 1, peak_i, trough_i, i, True))
+            peak_i, trough_i, trough_val = i, i, nav[i]
+            prev_max = nav[i]
+        elif nav[i] < trough_val:
+            trough_val, trough_i = nav[i], i
+    if trough_val < prev_max - 1e-15:
+        periods.append((trough_val / prev_max - 1, peak_i, trough_i, len(nav) - 1, False))
+
+    if periods:
+        dd = min(p[0] for p in periods)
+        worst = min(periods, key=lambda p: p[0])
+        dd_p2t = worst[2] - worst[1]
+        dd_t2r = (worst[3] - worst[2]) if worst[4] else 0
+        dd_recovered = worst[4]
+        closed = [p[3] - p[1] for p in periods if p[4]]
+        open_p = [p for p in periods if not p[4]]
+        longest_close = max(closed) if closed else 0
+        open_days = open_p[0][3] - open_p[0][1] if open_p else 0
+    else:
+        dd = 0.0
+        dd_p2t = dd_t2r = longest_close = open_days = 0
+        dd_recovered = True
+    return eq, ann, sharpe, dd, win, dd_p2t, dd_t2r, dd_recovered, longest_close, open_days
 
 
 def main(hist_file=''):
@@ -192,15 +226,20 @@ def main(hist_file=''):
     pk = pd.DataFrame(pick_rows, columns=['vr5', 'vr20', 'chg1', 'chg2', 'up3', 'pos20', 'ret1', 'p'])
     print(f'\n■ 每日 Top-{TOP_N} 轮动回测 (测试期 {len(rot):,} 个交易日, '
           f'收盘买入 → 次日收盘卖出, 涨停日买不进)')
-    print(f'  {"口径":<26}{"总收益":>10}{"年化":>9}{"Sharpe":>8}{"最大回撤":>9}{"日胜率":>8}')
-    print('  ' + '─' * 70)
+    print(f'  {"口径":<26}{"总收益":>10}{"年化":>9}{"Sharpe":>8}{"最大回撤":>9}'
+          f'{"峰→谷":>6}{"谷→收复":>8}{"最长水下":>8}{"日胜率":>8}')
+    print('  ' + '─' * 82)
     r0 = rot['base'].values
     r1 = rot['r'].values
     r1c = r1 - COST
     for lab, r in (('全市场等权基准', r0), ('模型 Top-5 (无成本)', r1),
                    ('模型 Top-5 (双边0.2%成本)', r1c)):
-        eq, ann, sh, dd, win = equity_stats(r)
-        print(f'  {lab:<26}{eq - 1:>+9.2%}{ann:>+8.2%}{sh:>8.2f}{dd:>8.1%}{win:>8.1%}')
+        eq, ann, sh, dd, win, p2t, t2r, rec, lc, opd = equity_stats(r)
+        t2rs = f'{t2r}日' if rec else '未收复'
+        longest = max(lc, opd)
+        om = ' (未)' if opd > lc else ''
+        print(f'  {lab:<26}{eq - 1:>+9.2%}{ann:>+8.2%}{sh:>8.2f}{dd:>8.1%}'
+              f'{p2t:>4}日{t2rs:>7}{longest:>5}日{om:<5}{win:>8.1%}')
     # 模型相对基准: 日度胜负
     beat = float((r1 > r0).mean())
     print(f'\n  模型 Top-5 跑赢基准的天数占比: {beat:.1%}  '
@@ -237,8 +276,9 @@ def main(hist_file=''):
     sr = buyable[(buyable['vr5'] < 1.2) & (buyable['chg1'] < 0)]  # 缩量/平量下跌
     sr2 = sr[sr['chg1'] > -LIMIT_CHG]  # 剔除当日跌停 (不接飞刀)
     print('\n■ 简单状态规则 (缩量/平量下跌买入, 全池等权, 测试期, 无训练)')
-    print(f'  {"口径":<24}{"总收益":>10}{"年化":>9}{"Sharpe":>8}{"最大回撤":>9}{"日胜率":>8}')
-    print('  ' + '─' * 66)
+    print(f'  {"口径":<24}{"总收益":>10}{"年化":>9}{"Sharpe":>8}{"最大回撤":>9}'
+          f'{"峰→谷":>6}{"谷→收复":>8}{"最长水下":>8}{"日胜率":>8}')
+    print('  ' + '─' * 80)
     for lab, src in (('含跌停日', sr), ('剔除当日跌停', sr2)):
         sr_rows = []
         for d, grp in src.groupby('date'):
@@ -246,8 +286,12 @@ def main(hist_file=''):
         srdf = pd.DataFrame(sr_rows, columns=['date', 'r'])
         if not len(srdf):
             continue
-        eq, ann, sh, dd, win = equity_stats(srdf['r'].values)
-        print(f'  {lab:<24}{eq - 1:>+9.2%}{ann:>+8.2%}{sh:>8.2f}{dd:>8.1%}{win:>8.1%}'
+        eq, ann, sh, dd, win, p2t, t2r, rec, lc, opd = equity_stats(srdf['r'].values)
+        t2rs = f'{t2r}日' if rec else '未收复'
+        longest = max(lc, opd)
+        om = ' (未)' if opd > lc else ''
+        print(f'  {lab:<24}{eq - 1:>+9.2%}{ann:>+8.2%}{sh:>8.2f}{dd:>8.1%}'
+              f'{p2t:>4}日{t2rs:>7}{longest:>5}日{om:<5}{win:>8.1%}'
               f'  (样本 {len(srdf):,} 天)')
 
     print('\n' + '═' * 90)
