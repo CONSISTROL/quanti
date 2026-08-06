@@ -547,30 +547,46 @@ def generate_html_report(scored_df, top_n, weights, output_path, spot_filtered=N
     </tbody></table>
     <p style="color:#999;font-size:12px;margin-top:-12px;">{footnote}</p>""")
 
-        # 当前持仓
-        if trade_result.get('final_positions'):
-            html_parts.append("""
-    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📦 当前持仓建议</h2>
+        # 当前持仓 (按口径: signal=信号账户持仓[信号价摊薄成本], exec=执行账户持仓[执行价成本])
+        sig_pos = trade_result.get('signal_positions') if trade_scope == 'signal' else None
+        positions_src = sig_pos if sig_pos else trade_result.get('final_positions', [])
+        if positions_src:
+            pos_note = ' <span style="font-size:12px;color:#888;">(信号口径: 信号日按信号价成交)</span>' if trade_scope == 'signal' else ''
+            html_parts.append(f"""
+    <h2 style="margin:24px 0 12px;color:#1a1a2e;">📦 当前持仓建议{pos_note}</h2>
     <table style="margin-bottom:20px;">
     <thead><tr><th>代码</th><th>名称</th><th>成本价</th><th>现价</th><th>数量</th><th>浮动盈亏</th><th>盈亏%</th><th>投入资金</th></tr></thead>
     <tbody>""")
             total_float = 0
-            for pos in trade_result['final_positions']:
-                cur = getattr(pos, '_last_price', pos.entry_price)
-                fpnl = (cur - pos.entry_price) * pos.shares
-                fpct = (cur / pos.entry_price - 1) if pos.entry_price > 0 else 0
+            for pos in positions_src:
+                if isinstance(pos, dict):
+                    code = pos.get('code', '')
+                    name = pos.get('name', '')
+                    entry_price = pos.get('cost', 0)
+                    shares = pos.get('shares', 0)
+                    cur = pos.get('last_price', 0) or entry_price
+                    capital = entry_price * shares
+                else:
+                    code = pos.code
+                    name = pos.name
+                    entry_price = pos.entry_price
+                    shares = pos.shares
+                    cur = getattr(pos, '_last_price', pos.entry_price)
+                    capital = pos.capital
+                fpnl = (cur - entry_price) * shares
+                fpct = (cur / entry_price - 1) if entry_price > 0 else 0
                 total_float += fpnl
                 css = 'color:#10b981;font-weight:600;' if fpnl >= 0 else 'color:#ef4444;font-weight:600;'
                 sign = '+' if fpnl >= 0 else ''
                 html_parts.append(f"""<tr>
-                    <td><strong>{pos.code}</strong></td>
-                    <td>{pos.name}</td>
-                    <td>¥{pos.entry_price:.2f}</td>
+                    <td><strong>{code}</strong></td>
+                    <td>{name}</td>
+                    <td>¥{entry_price:.2f}</td>
                     <td>¥{cur:.2f}</td>
-                    <td>{pos.shares}</td>
+                    <td>{shares}</td>
                     <td style="{css}">{sign}¥{fpnl:,.0f}</td>
                     <td style="{css}">{sign}{fpct:.1%}</td>
-                    <td>¥{pos.capital:,.0f}</td>
+                    <td>¥{capital:,.0f}</td>
                 </tr>""")
             total_css = 'color:#10b981;font-weight:600;' if total_float >= 0 else 'color:#ef4444;font-weight:600;'
             total_sign = '+' if total_float >= 0 else ''

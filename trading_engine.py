@@ -996,6 +996,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
     #   信号账户 → "系统买卖信号记录" (信号日/信号价/信号口径收益)
     #   执行账户 → "用户A操作记录"  (执行日/执行价/执行口径收益)
     signal_curve = []
+    sig_positions = []  # 信号账户最终持仓 [{code, name, shares, cost(摊薄信号价), last_price}]
     if trades:
         sig_codes = {t.code for t in trades}
         sig_closes = {}
@@ -1021,6 +1022,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         # 卖出清仓 — 份额与执行账户不同, 但信号序列一致 (交易次数对得上)
         s_cash = float(initial_capital)
         s_held = {}  # {code: shares}
+        s_cost = {}  # {code: 累计投入金额(信号价×份额)} — 摊薄信号成本
         s_peak = {}  # {code: (peak_close, peak_day_idx)} — 持仓期间最高收盘价及日期
         sig_last_close = {}  # {code: 最近有效收盘价} — 缺失日期(停牌/未上市)前向填充
         for day_idx, day in enumerate(trading_dates):
@@ -1042,6 +1044,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     t.drawdown_days = max(0, day_idx - pk[1])
                 s_cash += held_shares * sig_px
                 s_held.pop(t.code, None)
+                s_cost.pop(t.code, None)
                 s_peak.pop(t.code, None)
                 t.signal_shares = held_shares  # 信号账户实际卖出份额
             # 后买 (满仓, 同日多笔等分现金)
@@ -1059,6 +1062,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                     if shares > 0:
                         s_cash -= shares * sig_px
                         s_held[t.code] = s_held.get(t.code, 0) + shares
+                        s_cost[t.code] = s_cost.get(t.code, 0) + shares * sig_px
                         s_peak[t.code] = (sig_px, day_idx)  # 持仓峰值起点 = 买入信号价
                     t.signal_shares = shares
             # 当日估值 + 持仓峰值更新
@@ -1072,6 +1076,17 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
                         s_peak[cd] = (c, day_idx)
                 mv += sh * sig_last_close.get(cd, 0)
             signal_curve.append((day, s_cash + mv))
+        # 信号账户最终持仓 (信号价摊薄成本 + 最新收盘价) — 供信号口径报告的"当前持仓"区块
+        for code, sh in s_held.items():
+            cost_avg = (s_cost.get(code, 0) / sh) if sh else 0
+            nm = ''
+            meta = code_meta.get(code)
+            if meta:
+                nm = meta[1]
+            sig_positions.append({
+                'code': code, 'name': nm, 'shares': sh,
+                'cost': cost_avg, 'last_price': sig_last_close.get(code, 0),
+            })
     else:
         signal_curve = list(equity_curve)
 
@@ -1215,6 +1230,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         'signal_equity_curve': signal_curve,
         'signal_stats': signal_stats,
         'final_positions': positions,
+        'signal_positions': sig_positions,
         'initial_capital': initial_capital,
     }
 
