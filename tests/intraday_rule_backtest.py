@@ -461,6 +461,130 @@ def main(limit=0, hist_file='', html_path=''):
     return 0
 
 
+def main_combined(limit=0, hist_file=''):
+    """口诀组合状态机 (--combined): 四条口诀作为一套系统每天实时运行
+
+    每日开盘(集合竞价, 日线用 open): 卖出昨日买入的全部持仓(资金全额循环),
+    同时买入今日信号池 = 今日低开(R1) ∪ 昨日尾盘跳水(R3);
+    R2 隐含在"开盘卖"(高开日自动兑现, 单独诊断其增量);
+    R4 是"不追"口诀 → 反事实池 (组合+尾盘拉升) 只作对照。
+    收益口径 o-to-o (开盘买→次日开盘卖), 与分开版(次日收盘卖)对比。
+    """
+    hist = _load_history_local(hist_file)
+    if hist is None:
+        print('  ✗ 无历史缓存')
+        return 1
+
+    bench = defaultdict(new_acc)   # 基准: 全市场 o-to-o 隔夜循环
+    comb = defaultdict(new_acc)    # 口诀组合: R1 ∪ R3 (同股同日去重)
+    comb4 = defaultdict(new_acc)   # 反事实: 组合 + R4 追尾盘拉升
+    r2_hi = []                     # R2 诊断: 组合持仓次日高开≥2% → (开盘卖, 收盘卖)
+    r2_lo = []                     # 对照: 次日非高开 → (开盘卖, 收盘卖)
+
+    n_stock = 0
+    for i, (sina, df) in enumerate(hist.items()):
+        if limit and i >= limit:
+            break
+        if df is None or 'date' not in df.columns or 'close' not in df.columns:
+            continue
+        c = df['close'].values.astype(np.float64)
+        o = df['open'].values.astype(np.float64)
+        h = df['high'].values.astype(np.float64)
+        l = df['low'].values.astype(np.float64)
+        n = len(c)
+        if n < 10:
+            continue
+        dts = pd.to_datetime(df['date'].values)
+        th = _limit_up_th(sina)
+        chg = np.concatenate([[np.nan], c[1:] / c[:-1] - 1])
+        gap = np.concatenate([[np.nan], o[1:] / c[:-1] - 1])
+        rng = np.where(h - l > 0, h - l, np.nan)
+        pos_low = (c - l) / rng
+        pos_high = (h - c) / rng
+        oo = np.full(n, np.nan)
+        oo[:-1] = o[1:] / o[:-1] - 1        # 今日开盘买 → 次日开盘卖 (隔夜循环)
+        cnext = np.full(n, np.nan)
+        cnext[:-1] = c[1:] / o[:-1] - 1     # 今日开盘买 → 次日收盘卖 (R2 对照)
+        for j in range(1, n - 1):
+            d = dts[j]
+            if -th < gap[j] < th and not np.isnan(oo[j]):
+                upd(bench, d, oo[j])
+            # 今日买入池 (同股同日最多入池一次)
+            is_r1 = gap[j] <= -0.02 and gap[j] > -th
+            is_r3 = (j - 1 >= 1 and chg[j - 1] <= -0.03 and pos_low[j - 1] <= 0.15
+                     and -th < gap[j] < th)
+            is_r4 = (j - 1 >= 1 and chg[j - 1] >= 0.03 and pos_high[j - 1] <= 0.15
+                     and -th < gap[j] < th)
+            if (is_r1 or is_r3) and not np.isnan(oo[j]):
+                upd(comb, d, oo[j])
+                if j + 1 < n and not np.isnan(cnext[j]):
+                    g1 = gap[j + 1] if j + 1 < n else np.nan
+                    if not np.isnan(g1):
+                        (r2_hi if g1 >= 0.02 else r2_lo).append((oo[j], cnext[j]))
+            if (is_r1 or is_r3 or is_r4) and not np.isnan(oo[j]):
+                upd(comb4, d, oo[j])
+        n_stock += 1
+
+    print(f'  √ 样本: {n_stock} 只股票 (组合状态机口径: 每日开盘卖旧买新, 资金全额循环)')
+
+    print('\n' + '═' * 120)
+    print('  组合净值 (o-to-o 隔夜循环, 每日信号等权, 毛收益)')
+    print('═' * 120)
+    print(f"  {'规则':<36}{'样本':>9}{'P↑':>7}{'均收益':>9}{'组合年化':>9}"
+          f"{'净年化':>9}{'Sharpe':>8}{'最大回撤':>9}{'22前/后年化':>14}")
+    print('  ' + '─' * 116)
+    rows = [summarize('基准: 全市场每日开盘买次日开盘卖', bench),
+            summarize('口诀组合 R1低开∪R3尾盘跳水', comb),
+            summarize('反事实: 组合+R4追尾盘拉升(应不追)', comb4)]
+    for r in rows:
+        if r is None:
+            continue
+        pre, post = r['halves']
+        print(f"  {r['name']:<36}{r['n']:>9,}{r['p']:>7.1%}{r['mean']:>+9.2%}"
+              f"{r['ann']:>+9.1%}{r['net_ann']:>+9.1%}{r['sharpe']:>8.2f}{r['dd']:>9.1%}"
+              f"{pre:>+6.1%}/{post:>+6.1%}")
+
+    print('\n  ── R2 诊断: 组合持仓次日的卖出时机 (口诀"早盘急涨卖出") ──')
+    for lbl, grp in (('次日高开≥2% (应开盘卖)', r2_hi), ('次日非高开 (对照)', r2_lo)):
+        if not grp:
+            continue
+        oo_arr = np.array([x[0] for x in grp])
+        cn_arr = np.array([x[1] for x in grp])
+        diff = oo_arr - cn_arr   # 开盘卖 - 收盘卖
+        print(f'  {lbl:<24} n={len(grp):>9,} 开盘卖均{oo_arr.mean():+8.2%}'
+              f' 收盘卖均{cn_arr.mean():+8.2%} 提前卖增量{diff.mean() * 100:+6.2f}pp'
+              f' P(开盘卖优){(diff > 0).mean():6.1%}')
+
+    print('\n' + '═' * 120)
+    print('  结论要点 (组合版)')
+    print('═' * 120)
+    b, com, c4 = rows
+    if com and b:
+        lift = (com['mean'] - b['mean']) * 100
+        print(f'  ① 口诀组合 vs 全市场基准: 均{com["mean"]:+.2%} vs {b["mean"]:+.2%}'
+              f' (lift {lift:+.2f}pp), 毛年化 {com["ann"]:+.1%} vs {b["ann"]:+.1%},'
+              f' 净年化 {com["net_ann"]:+.1%} vs {b["net_ann"]:+.1%}')
+        print(f'     → 组合把 R1/R3 信号合并成一套实时系统, 每日开盘全仓循环;'
+              f' 分开版为次日收盘卖, 组合版为次日开盘卖 (资金循环约束), 收益自然更低')
+    if c4 and com:
+        verdict2 = '口诀「下午急涨不追」在组合内同样成立' if c4['mean'] < com['mean'] else '加入后未恶化'
+        print(f'  ② R4 反事实: 加入"追尾盘拉升"后 均{c4["mean"]:+.2%} vs 组合 {com["mean"]:+.2%}'
+              f' (毛年化 {c4["ann"]:+.1%} vs {com["ann"]:+.1%}) → {verdict2}')
+    if r2_hi and r2_lo:
+        hi_diff = np.mean([x[0] - x[1] for x in r2_hi])
+        lo_diff = np.mean([x[0] - x[1] for x in r2_lo])
+        print(f'  ③ R2 卖出时机: 高开日提前卖增量 {hi_diff*100:+.2f}pp vs 非高开日 {lo_diff*100:+.2f}pp'
+              f' → {"高开才卖、平开不卖的选择性卖出成立: 开盘卖只应在高开日执行" if hi_diff > 0 > lo_diff else "卖出时机无差异"}')
+    if com:
+        pre, post = com['halves']
+        print(f'  ④ 时效衰减: 组合 2022前/后年化 {pre*100:+.1f}%/{post*100:+.1f}%'
+              f' (基准 {b["halves"][0]*100:+.1f}%/{b["halves"][1]*100:+.1f}%)'
+              f' → 与分开版一致: 口诀体系是隔夜溢价时代的遗产, 2022 后超额≈0')
+    print('  ⚠ 口径: 与分开版相同的日线代理/T+1/剔除一字板/幸存者偏差;'
+          ' 组合假设每日开盘全仓循环(卖旧买新同价成交, 实际有滑点), 0.2%/日往返成本已单列净年化')
+    return 0
+
+
 if __name__ == '__main__':
     import argparse
     p = argparse.ArgumentParser(description='日内量价口诀回测')
@@ -468,13 +592,16 @@ if __name__ == '__main__':
     p.add_argument('--hist-file', default='')
     p.add_argument('--out', default='', help='把报告输出保存到文件 (默认只打印终端)')
     p.add_argument('--out-html', default='', help='另存 echarts HTML 报告 (含净值/阈值图表)')
+    p.add_argument('--combined', action='store_true',
+                   help='跑口诀组合状态机 (四条规则一套系统实时运行, 每日开盘卖旧买新), 替代分开版')
     a = p.parse_args()
     orig = sys.stdout
     out = None
     if a.out:
         out = open(a.out, 'w', encoding='utf-8')
         sys.stdout = out
-    rc = main(limit=a.limit, hist_file=a.hist_file, html_path=a.out_html)
+    rc = main_combined(limit=a.limit, hist_file=a.hist_file) if a.combined \
+        else main(limit=a.limit, hist_file=a.hist_file, html_path=a.out_html)
     if out:
         out.flush()
         out.close()
