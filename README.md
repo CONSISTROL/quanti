@@ -335,7 +335,7 @@ python tests/analyze_stock.py --code 002384  # 默认东山精密; 传代码可�
 
 ### 日内量价口诀回测（intraday_rule_backtest）
 
-验证 A 股流传的四条日内口诀：「早盘急跌买入 / 早盘急涨卖出 / 下午急涨不追 / 下午急跌次日狙击」。只有日线 OHLCV，用日线结构代理分时行为（早盘急跌≈大幅低开、下午急跌≈大阴线且收盘贴底 `pos_low≤0.15`），并遵守 T+1：策略全部为隔夜持有（R1 开盘买入→次日收盘卖；R3/R4 次日开盘操作）。全市场 2732 只、2014-2026、740 万样本。加 `--out <文件>` 可把完整报告保存到文件（如 `python tests/intraday_rule_backtest.py --out report_intraday_rules.txt`）。
+验证 A 股流传的四条日内口诀：「早盘急跌买入 / 早盘急涨卖出 / 下午急涨不追 / 下午急跌次日狙击」。只有日线 OHLCV，用日线结构代理分时行为（早盘急跌≈大幅低开、下午急跌≈大阴线且收盘贴底 `pos_low≤0.15`），并遵守 T+1：策略全部为隔夜持有（R1 开盘买入→次日收盘卖；R3/R4 次日开盘操作）。全市场 2732 只、2014-2026、740 万样本。加 `--out <文件>` 保存终端报告、`--out-html <文件>` 另存 echarts HTML 报告（统计卡 + 毛/净年化与 22前/后对比图 + 阈值敏感性图 + 结论卡片，如 `python tests/intraday_rule_backtest.py --out report_intraday_rules.txt --out-html report_intraday_rules.html`）。
 
 **结果表**（每日信号等权、日频再平衡；毛收益 vs 扣 0.2%/日往返成本的净年化；22前/后 = 2022 年前/后年化）：
 
