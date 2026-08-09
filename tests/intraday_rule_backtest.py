@@ -68,6 +68,21 @@ def _limit_up_th(code):
     return 0.095
 
 
+def _load_name_map():
+    """从最新 spot 缓存加载 {sina代码: 股票名称} (hist 缓存无名称列)"""
+    import glob
+    import pickle
+    files = sorted(glob.glob(os.path.join('cache', 'spot_*.pkl')))
+    if not files:
+        return {}
+    with open(files[-1], 'rb') as f:
+        spot = pickle.load(f)
+    try:
+        return dict(zip(spot['代码'].astype(str), spot['名称'].astype(str)))
+    except Exception:
+        return {}
+
+
 def new_acc():
     return {'n': 0, 'pos': 0, 's': 0.0, 'vals': []}
 
@@ -210,8 +225,9 @@ const nfmt = v => Number(v).toLocaleString();
 // 头部统计卡
 $('stats').innerHTML = STATS.map(s => `<div class="stat"><div class="v">${s.v}</div><div class="l">${s.l}</div></div>`).join('');
 // 主表
+const hfmt = v => isNaN(v) ? '—' : span(v);
 $('tbl-main').innerHTML = '<tr><th>规则</th><th>样本</th><th>P↑</th><th>均收益</th><th>中位</th><th>组合年化</th><th>净年化</th><th>Sharpe</th><th>最大回撤</th><th>22前/后年化</th></tr>' +
-  ROWS.map(r => `<tr><td>${r.name}</td><td>${nfmt(r.n)}</td><td>${pct(r.p)}</td><td>${span(r.mean)}</td><td>${span(r.med)}</td><td>${span(r.ann)}</td><td>${span(r.net_ann)}</td><td>${r.sharpe.toFixed(2)}</td><td>${span(r.dd)}</td><td>${span(r.halves[0])}/${span(r.halves[1])}</td></tr>`).join('');
+  ROWS.map(r => `<tr><td>${r.name}</td><td>${nfmt(r.n)}</td><td>${pct(r.p)}</td><td>${span(r.mean)}</td><td>${span(r.med)}</td><td>${span(r.ann)}</td><td>${span(r.net_ann)}</td><td>${r.sharpe.toFixed(2)}</td><td>${span(r.dd)}</td><td>${hfmt(r.halves[0])}/${hfmt(r.halves[1])}</td></tr>`).join('');
 // 事件表
 $('tbl-ev').innerHTML = '<tr><th>规则</th><th>样本</th><th>P↑</th><th>均收益</th><th>中位</th></tr>' +
   EV.map(r => `<tr><td>${r.name}</td><td>${nfmt(r.n)}</td><td>${pct(r.p)}</td><td>${span(r.mean)}</td><td>${span(r.med)}</td></tr>`).join('');
@@ -233,7 +249,7 @@ barChart('c1', ROWS.map(r => r.short), [
   { name: '毛年化', fixed: BLUE, data: ROWS.map(r => r.ann * 100) },
   { name: '净年化(扣0.2%/日)', fixed: AMBER, data: ROWS.map(r => r.net_ann * 100) }]);
 barChart('c2', ROWS.map(r => r.short), [
-  { name: '2022前', fixed: BLUE, data: ROWS.map(r => r.halves[0] * 100) },
+  { name: '2022前', fixed: BLUE, data: ROWS.map(r => isNaN(r.halves[0]) ? null : r.halves[0] * 100) },
   { name: '2022后', fixed: GRAY, data: ROWS.map(r => r.halves[1] * 100) }]);
 barChart('c3', TH1.map(x => x.label), [{ name: '年化', fixed: BLUE, data: TH1.map(x => x.ann * 100) }]);
 barChart('c4', TH3.map(x => x.label), [{ name: '年化', fixed: BLUE, data: TH3.map(x => x.ann * 100) }]);
@@ -248,7 +264,8 @@ def pct_fmt(v, d=1):
 
 
 def _sample_trades(trades, per_year=4000, top_bottom=100):
-    """按年分层抽样 + 收益 Top/Bottom 全量, 供 HTML 内嵌 (全量25万+条过大)"""
+    """trades: (买日, 卖日, 代码, 名称, 买入价, 卖出价, 低开%, 次日收益%)
+    按买入年份分层抽样 + 收益 Top/Bottom 全量, 每笔展开为 买入/卖出 两行操作记录"""
     buckets = defaultdict(list)
     for t in trades:
         buckets[t[0][:4]].append(t)
@@ -260,9 +277,15 @@ def _sample_trades(trades, per_year=4000, top_bottom=100):
         else:
             idx = np.linspace(0, len(lst) - 1, per_year).astype(int)
             sampled.extend(lst[i] for i in idx)
-    srt = sorted(trades, key=lambda t: t[3])
-    extras = [('★', *t) for t in srt[:top_bottom] + srt[-top_bottom:]]
-    return [('', *t) for t in sampled], extras
+    srt = sorted(trades, key=lambda t: t[7])
+    extras = set(tuple(t) for t in srt[:top_bottom] + srt[-top_bottom:])
+    rows = []
+    for t in sampled + [x for x in srt[:top_bottom] + srt[-top_bottom:]]:
+        buy_d, sell_d, code, name, bp, sp, gap, ret = t
+        star = '★' if tuple(t) in extras else ''
+        rows.append((star, '买入', buy_d, code, name, bp, gap, ''))
+        rows.append((star, '卖出', sell_d, code, name, sp, '', ret))
+    return rows
 
 
 _TRADE_HTML_TPL = r"""<!DOCTYPE html>
@@ -336,7 +359,7 @@ _TRADE_HTML_TPL = r"""<!DOCTYPE html>
       <span class="hint" id="f-info" style="margin:0"></span>
     </div>
     <div style="overflow:auto; max-height:520px">
-      <table id="tbl"><thead><tr><th>标注</th><th>日期</th><th>代码</th><th>低开%</th><th>次日收益%</th></tr></thead><tbody id="tbody"></tbody></table>
+      <table id="tbl"><thead><tr><th>标注</th><th>操作</th><th>日期</th><th>代码</th><th>名称</th><th>价格</th><th>低开%</th><th>次日收益%</th></tr></thead><tbody id="tbody"></tbody></table>
     </div>
     <div class="pager" id="pager"></div>
     <div class="hint">★ = 全样本收益 Top100/Bottom100 (未抽样的真实极端交易); 完整全样本 25.7 万笔, 抽样仅用于展示分布, 全部统计均为全样本口径</div>
@@ -393,25 +416,29 @@ echarts.init($('heat')).setOption({
   series: [{ type: 'heatmap', data: HEAT.data.map(d => [d[1]-1, HEAT.years.length-1-HEAT.years.indexOf(d[0]), +d[2].toFixed(2), d[3]]),
     label: { show: true, fontSize: 9 } }]
 });
-// 交易明细表
-const years = [...new Set(TRADES.map(t => t[1].slice(0,4)))].sort();
+// 交易明细表 (每笔交易 = 买入/卖出 两行操作记录)
+// t = [star, op, date, code, name, price, gap, ret]
+const years = [...new Set(TRADES.filter(t => t[1] === '买入').map(t => t[2].slice(0,4)))].sort();
 $('f-year').innerHTML = '<option value="">全部年份</option>' + years.map(y => `<option>${y}</option>`).join('');
 const PAGE = 500;
 let cur = [], page = 0;
 function render() {
   const sel = cur.slice(page*PAGE, (page+1)*PAGE);
-  $('tbody').innerHTML = sel.map(t => `<tr><td class="${t[0] ? 'star' : ''}">${t[0]}</td><td>${t[1]}</td><td>${t[2]}</td><td>${pct(t[3],2)}</td>${span(t[4])}</tr>`).join('');
+  $('tbody').innerHTML = sel.map(t => `<tr><td class="${t[0] ? 'star' : ''}">${t[0]}</td>` +
+    `<td style="color:${t[1] === '买入' ? '#e8403a' : '#1ba27a'};font-weight:600">${t[1]}</td>` +
+    `<td>${t[2]}</td><td>${t[3]}</td><td style="text-align:left">${t[4]}</td>` +
+    `<td>${t[5].toFixed(2)}</td><td>${t[6] ? pct(t[6],2) : ''}</td><td>${t[7] ? span(t[7]) : ''}</td></tr>`).join('');
   const pages = Math.max(1, Math.ceil(cur.length/PAGE));
   $('pager').innerHTML = `<button onclick="pg(0)" ${page==0?'disabled':''}>«</button><button onclick="pg(${page-1})" ${page==0?'disabled':''}>‹</button>` +
-    `<span>${page+1} / ${pages} (共 ${nfmt(cur.length)} 笔)</span>` +
+    `<span>${page+1} / ${pages} (共 ${nfmt(cur.length)} 笔操作)</span>` +
     `<button onclick="pg(${page+1})" ${page>=pages-1?'disabled':''}>›</button><button onclick="pg(${pages-1})" ${page>=pages-1?'disabled':''}>»</button>`;
 }
 window.pg = i => { page = i; render(); };
 $('f-apply').onclick = () => {
   const y = $('f-year').value, code = $('f-code').value.trim().toLowerCase(), sort = $('f-sort').value;
-  cur = TRADES.filter(t => (!y || t[1].startsWith(y)) && (!code || t[2].toLowerCase().includes(code)));
-  if (sort === 'ret') cur.sort((a,b) => a[4]-b[4]);
-  if (sort === 'gap') cur.sort((a,b) => a[3]-b[3]);
+  cur = TRADES.filter(t => (!y || t[2].startsWith(y)) && (!code || (t[3].toLowerCase().includes(code) || t[4].toLowerCase().includes(code))));
+  if (sort === 'ret') cur.sort((a,b) => (b[7]||0) - (a[7]||0));
+  if (sort === 'gap') cur.sort((a,b) => (a[6]||0) - (b[6]||0));
   page = 0; render();
 };
 $('f-apply').click();
@@ -421,11 +448,13 @@ $('f-apply').click();
 """
 
 
-def _gen_trades_html(stats, nav, by_year, heat, trades, concl):
+def _gen_trades_html(stats, nav, by_year, heat, trades, concl, since=''):
     import json
     d = lambda x: json.dumps(x, ensure_ascii=False)
     return (_TRADE_HTML_TPL
-            .replace('@@SUB@@', 'R1 低开≥2% 开盘买入 → 次日收盘卖出 (T+1 隔夜) | 毛收益未扣成本 | 全样本 ' + f'{sum(y["n"] for y in by_year):,}' + ' 笔, 抽样展示')
+            .replace('@@SUB@@',
+                     ('R1 低开≥2% 开盘买入 → 次日收盘卖出 (T+1 隔夜) | 毛收益未扣成本 | '
+                      f'回测区间: {since or "全历史"} 起 | 全样本 {sum(y["n"] for y in by_year):,} 笔, 抽样展示'))
             .replace('@@NAV@@', d(nav))
             .replace('@@YEARS@@', d(by_year))
             .replace('@@HEAT@@', d(heat))
@@ -453,12 +482,15 @@ def _gen_html(rows, ev_rows, th1_rows, th3_rows, concl, stats):
             .replace('@@STATS@@', d(stats)))
 
 
-def main(limit=0, hist_file='', html_path='', trades_html_path=''):
+def main(limit=0, hist_file='', html_path='', trades_html_path='', since=''):
     hist = _load_history_local(hist_file)
     if hist is None:
         print('  ✗ 无历史缓存')
         return 1
-    trades = [] if trades_html_path else None   # R1 逐笔 (date, code, gap%, ret%)
+    if since:
+        print(f'  (回测区间: {since} 起)')
+    names = _load_name_map() if trades_html_path else {}
+    trades = [] if trades_html_path else None   # R1 逐笔 (买日,卖日,代码,名称,买入价,卖出价,低开%,次日收益%)
 
     acc = defaultdict(new_acc)   # 基准: 全市场每日开盘买隔夜卖
     R1 = defaultdict(new_acc)    # 低开买入 → 隔夜 (T+1 卖)
@@ -478,13 +510,15 @@ def main(limit=0, hist_file='', html_path='', trades_html_path=''):
             break
         if df is None or 'date' not in df.columns or 'close' not in df.columns:
             continue
+        if since:
+            df = df[df['date'].astype(str) >= since]
+        if len(df) < 10:
+            continue
         c = df['close'].values.astype(np.float64)
         o = df['open'].values.astype(np.float64)
         h = df['high'].values.astype(np.float64)
         l = df['low'].values.astype(np.float64)
         n = len(c)
-        if n < 10:
-            continue
         dts = pd.to_datetime(df['date'].values)
         th = _limit_up_th(sina)
         chg = np.concatenate([[np.nan], c[1:] / c[:-1] - 1])
@@ -514,7 +548,9 @@ def main(limit=0, hist_file='', html_path='', trades_html_path=''):
                     upd(R1, d, overnight[j])
                     upd(R1d, d, day_ret[j])   # 当日修复诊断 (不可交易)
                     if trades is not None:
-                        trades.append((str(d)[:10], sina,
+                        trades.append((str(d)[:10], str(dts[j + 1])[:10], sina,
+                                       names.get(sina, sina),
+                                       round(float(o[j]), 2), round(float(c[j + 1]), 2),
                                        round(float(gap[j]) * 100, 2),
                                        round(float(overnight[j]) * 100, 2)))
                 if not np.isnan(r5[j]):
@@ -560,9 +596,11 @@ def main(limit=0, hist_file='', html_path='', trades_html_path=''):
         if r is None:
             continue
         pre, post = r['halves']
+        pre_s = f'{pre:+.1f}%' if not np.isnan(pre) else '   —  '
+        post_s = f'{post:+.1f}%' if not np.isnan(post) else '   —  '
         print(f"  {r['name']:<32}{r['n']:>9,}{r['p']:>7.1%}{r['mean']:>+9.2%}{r['med']:>+9.2%}"
               f"{r['ann']:>+9.1%}{r['net_ann']:>+9.1%}{r['sharpe']:>8.2f}{r['dd']:>9.1%}"
-              f"{pre:>+6.1%}/{post:>+6.1%}")
+              f"{pre_s:>8}/{post_s:>8}")
 
     print('\n' + '═' * 120)
     print('  事件统计 (5日持有为重叠窗口不合成净值; R1诊断为T+0不可交易参考)')
@@ -625,12 +663,17 @@ def main(limit=0, hist_file='', html_path='', trades_html_path=''):
         concl.append({'t': t, 'b': detail, 'w': False})
         pre_r3, post_r3 = r3['halves']
         pre_r1, post_r1 = r1['halves']
-        t = (f'④ 时效衰减: 2022年前/后年化 — R1 {pre_r1*100:+.1f}%/{post_r1*100:+.1f}%,'
-             f' R3 {pre_r3*100:+.1f}%/{post_r3*100:+.1f}%,'
-             f' 基准 {b["halves"][0]*100:+.1f}%/{b["halves"][1]*100:+.1f}%')
-        verdict = '口诀是 2015-2021 市场的遗产, 2022 后超额≈0 (毛口径), 扣成本后为负; 且日频再平衡 0.2%/天成本吃掉基准全部超额'
-        print(f'  {t} → {verdict}')
-        concl.append({'t': t, 'b': f'→ {verdict}', 'w': True})
+        if not np.isnan(pre_r1):
+            t = (f'④ 时效衰减: 2022年前/后年化 — R1 {pre_r1*100:+.1f}%/{post_r1*100:+.1f}%,'
+                 f' R3 {pre_r3*100:+.1f}%/{post_r3*100:+.1f}%,'
+                 f' 基准 {b["halves"][0]*100:+.1f}%/{b["halves"][1]*100:+.1f}%')
+            verdict = '口诀是 2015-2021 市场的遗产, 2022 后超额≈0 (毛口径), 扣成本后为负; 且日频再平衡 0.2%/天成本吃掉基准全部超额'
+            print(f'  {t} → {verdict}')
+            concl.append({'t': t, 'b': f'→ {verdict}', 'w': True})
+        else:
+            t = f'④ 区间为 {since} 起 (2022 后), 与全历史结论对照: 单笔均收益已衰减到 ≈0 量级'
+            print(f'  {t}')
+            concl.append({'t': t, 'b': '→ 该口诀体系的高年化属于 2022 前隔夜溢价时代, 本区间仅验证其衰减后的真实水平', 'w': True})
     warn = ('⚠ 口径: 毛收益未扣成本 (隔夜双边约0.2%, 5日双边约0.2%); 日线代理分时(早盘=低开/高开,'
             '下午=收盘位置); 次日一字涨/跌停开买不进已剔除; hist 含幸存者偏差;'
             ' 组合等权日频再平衡换手极高, 真实成本敏感')
@@ -653,12 +696,12 @@ def main(limit=0, hist_file='', html_path='', trades_html_path=''):
 
     if trades_html_path and trades:
         r1 = rows[1] if len(rows) > 1 else None
-        sampled, extras = _sample_trades(trades)
+        rows_expanded = _sample_trades(trades)
         yrs = sorted({t[0][:4] for t in trades})
         by_year = []
         for y in yrs:
             ys = [t for t in trades if t[0][:4] == y]
-            rets = np.array([t[3] for t in ys])
+            rets = np.array([t[7] for t in ys])
             by_year.append({'y': y, 'n': len(ys), 'p': float((rets > 0).mean()),
                            'mean': float(rets.mean() / 100)})
         hdata = []
@@ -666,33 +709,37 @@ def main(limit=0, hist_file='', html_path='', trades_html_path=''):
             for m in range(1, 13):
                 ys = [t for t in trades if t[0][:4] == y and int(t[0][5:7]) == m]
                 if ys:
-                    rets = np.array([t[3] for t in ys])
+                    rets = np.array([t[7] for t in ys])
                     hdata.append([y, m, float(rets.mean()), len(ys)])
         heat = {'years': yrs, 'data': hdata}
         tstats = [
             {'v': f'{len(trades):,}', 'l': 'R1 全样本笔数'},
-            {'v': pct_fmt(sum(1 for t in trades if t[3] > 0) / len(trades), 0), 'l': 'P↑'},
-            {'v': pct_fmt(sum(t[3] for t in trades) / len(trades) / 100), 'l': '单笔均收益'},
+            {'v': pct_fmt(sum(1 for t in trades if t[7] > 0) / len(trades), 0), 'l': 'P↑'},
+            {'v': pct_fmt(sum(t[7] for t in trades) / len(trades) / 100), 'l': '单笔均收益'},
             {'v': pct_fmt(r1['ann']) if r1 else '—', 'l': '毛年化'},
             {'v': pct_fmt(r1['net_ann']) if r1 else '—', 'l': '净年化 (扣0.2%/日)'},
-            {'v': pct_fmt(r1['halves'][0]) if r1 else '—', 'l': '2022前年化'},
+            {'v': pct_fmt(r1['halves'][0]) if r1 and not np.isnan(r1['halves'][0]) else '—', 'l': '2022前年化'},
             {'v': pct_fmt(r1['halves'][1]) if r1 else '—', 'l': '2022后年化'},
         ]
         tconcl = [
+            f'回测区间: {since or "全历史"}。' + ('2022 起（--since 过滤）的区间数据: ' if since else '全历史区间数据: ') +
+            f'R1 共 {len(trades):,} 笔, P↑{sum(1 for t in trades if t[7] > 0) / len(trades):.1%}, 单笔均收益 {sum(t[7] for t in trades) / len(trades):+.2f}%',
+            ('2022 后区间: 单笔均收益 {:.2f}%, 毛年化 {:.1f}% (仅日频复利微弱叠加), 扣 0.2%/日成本后净年化 {:.1f}%'
+             .format(sum(t[7] for t in trades) / len(trades), r1['ann'] * 100 if r1 else float('nan'), r1['net_ann'] * 100 if r1 else float('nan'))) if since else
             '高年化的本质是「日频复利」：单笔均收益仅 +0.35%、中位 +0.27%，靠 252 个交易日每天滚动叠加 → (1.0035)^252 ≈ +140%，毛年化 +163% 并非单笔暴利。',
-            '高年化集中在 2015-2021 隔夜溢价时代（热力图可见 2015/2020-2021 深红区）：2022 前年化 +252.8%，2022 后 -5.0%——同一条规则，市场结构变了就失效。',
-            '毛年化未扣成本：0.2%/日往返成本下净年化仅 +59.1%（2022 后为负）；日频全市场再平衡在实盘中无法按此换手率成交，真实可执行收益远低于毛年化。',
-            '幸存者偏差：hist 缓存只含至今仍在市的股票，退市股的历史信号被排除，会系统性高估收益（2015 后大量退市/ST）。',
+            ('2022 前年化 +252.8% 是隔夜溢价时代的产物; 2022 后 -5.0% — 同一条规则, 市场结构变了就失效。' if not since else ''),
+            '毛年化未扣成本：0.2%/日往返成本下净年化大幅缩水（2022 后为负）；日频全市场再平衡在实盘中无法按此换手率成交，真实可执行收益远低于毛年化。',
+            '幸存者偏差：hist 缓存只含至今仍在市的股票，退市股的历史信号被排除，会系统性高估收益。',
         ]
         tnav = {'dates': r1.get('dates', []), 'vals': r1.get('nav', [])} if r1 else {'dates': [], 'vals': []}
-        html = _gen_trades_html(tstats, tnav, by_year, heat, sampled + extras, tconcl)
+        html = _gen_trades_html(tstats, tnav, by_year, heat, rows_expanded, tconcl, since)
         with open(trades_html_path, 'w', encoding='utf-8') as f:
             f.write(html)
-        print(f'  √ 交易明细HTML已保存: {trades_html_path} (全样本{len(trades):,}笔, 内嵌抽样{len(sampled):,}+极端{len(extras):,})')
+        print(f'  √ 交易明细HTML已保存: {trades_html_path} (全样本{len(trades):,}笔, 内嵌操作{len(rows_expanded):,}行)')
     return 0
 
 
-def main_combined(limit=0, hist_file=''):
+def main_combined(limit=0, hist_file='', since=''):
     """口诀组合状态机 (--combined): 四条口诀作为一套系统每天实时运行
 
     每日开盘(集合竞价, 日线用 open): 卖出昨日买入的全部持仓(资金全额循环),
@@ -705,6 +752,8 @@ def main_combined(limit=0, hist_file=''):
     if hist is None:
         print('  ✗ 无历史缓存')
         return 1
+    if since:
+        print(f'  (回测区间: {since} 起)')
 
     bench = defaultdict(new_acc)   # 基准: 全市场 o-to-o 隔夜循环
     comb = defaultdict(new_acc)    # 口诀组合: R1 ∪ R3 (同股同日去重)
@@ -718,13 +767,15 @@ def main_combined(limit=0, hist_file=''):
             break
         if df is None or 'date' not in df.columns or 'close' not in df.columns:
             continue
+        if since:
+            df = df[df['date'].astype(str) >= since]
+        if len(df) < 10:
+            continue
         c = df['close'].values.astype(np.float64)
         o = df['open'].values.astype(np.float64)
         h = df['high'].values.astype(np.float64)
         l = df['low'].values.astype(np.float64)
         n = len(c)
-        if n < 10:
-            continue
         dts = pd.to_datetime(df['date'].values)
         th = _limit_up_th(sina)
         chg = np.concatenate([[np.nan], c[1:] / c[:-1] - 1])
@@ -771,9 +822,11 @@ def main_combined(limit=0, hist_file=''):
         if r is None:
             continue
         pre, post = r['halves']
+        pre_s = f'{pre:+.1f}%' if not np.isnan(pre) else '   —  '
+        post_s = f'{post:+.1f}%' if not np.isnan(post) else '   —  '
         print(f"  {r['name']:<36}{r['n']:>9,}{r['p']:>7.1%}{r['mean']:>+9.2%}"
               f"{r['ann']:>+9.1%}{r['net_ann']:>+9.1%}{r['sharpe']:>8.2f}{r['dd']:>9.1%}"
-              f"{pre:>+6.1%}/{post:>+6.1%}")
+              f"{pre_s:>8}/{post_s:>8}")
 
     print('\n  ── R2 诊断: 组合持仓次日的卖出时机 (口诀"早盘急涨卖出") ──')
     for lbl, grp in (('次日高开≥2% (应开盘卖)', r2_hi), ('次日非高开 (对照)', r2_lo)):
@@ -808,9 +861,13 @@ def main_combined(limit=0, hist_file=''):
               f' → {"高开才卖、平开不卖的选择性卖出成立: 开盘卖只应在高开日执行" if hi_diff > 0 > lo_diff else "卖出时机无差异"}')
     if com:
         pre, post = com['halves']
-        print(f'  ④ 时效衰减: 组合 2022前/后年化 {pre*100:+.1f}%/{post*100:+.1f}%'
-              f' (基准 {b["halves"][0]*100:+.1f}%/{b["halves"][1]*100:+.1f}%)'
-              f' → 与分开版一致: 口诀体系是隔夜溢价时代的遗产, 2022 后超额≈0')
+        if not np.isnan(pre):
+            print(f'  ④ 时效衰减: 组合 2022前/后年化 {pre*100:+.1f}%/{post*100:+.1f}%'
+                  f' (基准 {b["halves"][0]*100:+.1f}%/{b["halves"][1]*100:+.1f}%)'
+                  f' → 与分开版一致: 口诀体系是隔夜溢价时代的遗产, 2022 后超额≈0')
+        else:
+            print(f'  ④ 区间为 {since} 起 (2022 后), 组合 年化 {post*100:+.1f}%'
+                  f' (基准 {b["halves"][1]*100:+.1f}%) → 2022 后组合跑赢/跑输基准的实时表现')
     print('  ⚠ 口径: 与分开版相同的日线代理/T+1/剔除一字板/幸存者偏差;'
           ' 组合假设每日开盘全仓循环(卖旧买新同价成交, 实际有滑点), 0.2%/日往返成本已单列净年化')
     return 0
@@ -826,15 +883,16 @@ if __name__ == '__main__':
     p.add_argument('--trades-html', default='', help='另存 R1 低开买入交易明细 HTML (净值曲线+逐年/月热力图+抽样明细表)')
     p.add_argument('--combined', action='store_true',
                    help='跑口诀组合状态机 (四条规则一套系统实时运行, 每日开盘卖旧买新), 替代分开版')
+    p.add_argument('--since', default='', help='只回测该日期 (YYYY-MM-DD) 之后的区间, 如 --since 2022-01-01')
     a = p.parse_args()
     orig = sys.stdout
     out = None
     if a.out:
         out = open(a.out, 'w', encoding='utf-8')
         sys.stdout = out
-    rc = main_combined(limit=a.limit, hist_file=a.hist_file) if a.combined \
+    rc = main_combined(limit=a.limit, hist_file=a.hist_file, since=a.since) if a.combined \
         else main(limit=a.limit, hist_file=a.hist_file, html_path=a.out_html,
-                  trades_html_path=a.trades_html)
+                  trades_html_path=a.trades_html, since=a.since)
     if out:
         out.flush()
         out.close()
