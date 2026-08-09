@@ -298,5 +298,17 @@ if __name__ == '__main__':
     p = argparse.ArgumentParser(description='日内量价口诀回测')
     p.add_argument('--limit', type=int, default=0)
     p.add_argument('--hist-file', default='')
+    p.add_argument('--out', default='', help='把报告输出保存到文件 (默认只打印终端)')
     a = p.parse_args()
-    sys.exit(main(limit=a.limit, hist_file=a.hist_file))
+    orig = sys.stdout
+    out = None
+    if a.out:
+        out = open(a.out, 'w', encoding='utf-8')
+        sys.stdout = out
+    rc = main(limit=a.limit, hist_file=a.hist_file)
+    if out:
+        out.flush()
+        out.close()
+        sys.stdout = orig
+        print(f'√ 报告已保存: {a.out}')
+    sys.exit(rc)
