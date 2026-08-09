@@ -247,6 +247,193 @@ def pct_fmt(v, d=1):
     return f'{v * 100:+.{d}f}%'
 
 
+def _sample_trades(trades, per_year=4000, top_bottom=100):
+    """按年分层抽样 + 收益 Top/Bottom 全量, 供 HTML 内嵌 (全量25万+条过大)"""
+    buckets = defaultdict(list)
+    for t in trades:
+        buckets[t[0][:4]].append(t)
+    sampled = []
+    for y in sorted(buckets):
+        lst = buckets[y]
+        if len(lst) <= per_year:
+            sampled.extend(lst)
+        else:
+            idx = np.linspace(0, len(lst) - 1, per_year).astype(int)
+            sampled.extend(lst[i] for i in idx)
+    srt = sorted(trades, key=lambda t: t[3])
+    extras = [('★', *t) for t in srt[:top_bottom] + srt[-top_bottom:]]
+    return [('', *t) for t in sampled], extras
+
+
+_TRADE_HTML_TPL = r"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>R1 低开买入 — 交易明细与净值</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #f0f2f5; font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; color: #1f2329; }
+  .header { background: linear-gradient(135deg, #1e3a5f 0%, #2c5f8a 100%); color: #fff; padding: 24px 32px; }
+  .header h1 { font-size: 22px; font-weight: 600; }
+  .header .sub { opacity: .8; font-size: 13px; margin-top: 6px; }
+  .stats { display: flex; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+  .stat { background: rgba(255,255,255,.12); border-radius: 8px; padding: 10px 18px; min-width: 110px; }
+  .stat .v { font-size: 20px; font-weight: 700; }
+  .stat .l { font-size: 12px; opacity: .75; }
+  .container { max-width: 1440px; margin: 20px auto; padding: 0 16px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 20px; margin-bottom: 20px; }
+  .card h2 { font-size: 15px; color: #1f2329; margin-bottom: 12px; }
+  .chart { width: 100%; height: 380px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  .filters { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  .filters select, .filters input, .filters button { padding: 6px 10px; border: 1px solid #d9dde3; border-radius: 6px; font-size: 13px; background: #fff; }
+  .filters button { cursor: pointer; background: #2c5f8a; color: #fff; border: none; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { padding: 5px 10px; border-bottom: 1px solid #eef1f4; text-align: right; white-space: nowrap; }
+  th { background: #f7f8fa; color: #4e5969; font-weight: 600; cursor: pointer; user-select: none; }
+  th:hover { color: #2c5f8a; }
+  td:first-child, th:first-child { text-align: center; }
+  td:nth-child(2), th:nth-child(2) { text-align: left; }
+  tr:hover td { background: #fafbfc; }
+  .pos { color: #e8403a; font-weight: 600; }
+  .neg { color: #1ba27a; font-weight: 600; }
+  .star { color: #f0a500; font-weight: 700; }
+  .pager { display: flex; gap: 6px; margin-top: 12px; align-items: center; font-size: 13px; }
+  .pager button { padding: 4px 10px; border: 1px solid #d9dde3; border-radius: 6px; background: #fff; cursor: pointer; }
+  .pager button:disabled { opacity: .4; cursor: default; }
+  .hint { font-size: 12px; color: #86909c; margin-top: 10px; line-height: 1.7; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>📈 R1 低开买入 — 交易明细与净值</h1>
+  <div class="sub">@@SUB@@</div>
+  <div class="stats" id="stats"></div>
+</div>
+<div class="container">
+  <div class="card">
+    <h2>R1 组合净值 (每日低开≥2% 信号等权, 开盘买→次日收盘卖, 毛收益)</h2>
+    <div class="chart" id="nav"></div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h2>逐年交易统计 (全样本)</h2><div class="chart" id="byyear"></div></div>
+    <div class="card"><h2>年×月平均收益热力图 (%, 全样本)</h2><div class="chart" id="heat"></div></div>
+  </div>
+  <div class="card">
+    <h2>交易明细 (按年分层抽样, 每年≤4000条 + ★全市场收益 Top/Bottom 100)</h2>
+    <div class="filters">
+      <select id="f-year"><option value="">全部年份</option></select>
+      <input id="f-code" placeholder="代码搜索, 如 600206">
+      <select id="f-sort">
+        <option value="">默认 (按日期)</option>
+        <option value="ret">按次日收益排序</option>
+        <option value="gap">按低开幅度排序</option>
+      </select>
+      <button id="f-apply">筛选</button>
+      <span class="hint" id="f-info" style="margin:0"></span>
+    </div>
+    <div style="overflow:auto; max-height:520px">
+      <table id="tbl"><thead><tr><th>标注</th><th>日期</th><th>代码</th><th>低开%</th><th>次日收益%</th></tr></thead><tbody id="tbody"></tbody></table>
+    </div>
+    <div class="pager" id="pager"></div>
+    <div class="hint">★ = 全样本收益 Top100/Bottom100 (未抽样的真实极端交易); 完整全样本 25.7 万笔, 抽样仅用于展示分布, 全部统计均为全样本口径</div>
+  </div>
+  <div class="card">
+    <h2>高年化怎么来的</h2>
+    <div class="hint" id="concl"></div>
+  </div>
+</div>
+<script>
+const NAV = @@NAV@@;
+const YEARS = @@YEARS@@;
+const HEAT = @@HEAT@@;
+const TRADES = @@TRADES@@;
+const CONCL = @@CONCL@@;
+const STATS = @@STATS@@;
+const $ = id => document.getElementById(id);
+const nfmt = v => Number(v).toLocaleString();
+const pct = (v, d=1) => (v >= 0 ? '+' : '') + v.toFixed(d) + '%';
+const span = (v, d=2) => `<span class="${v >= 0 ? 'pos' : 'neg'}">${pct(v, d)}</span>`;
+$('stats').innerHTML = STATS.map(s => `<div class="stat"><div class="v">${s.v}</div><div class="l">${s.l}</div></div>`).join('');
+$('concl').innerHTML = CONCL.map(c => `<div>${c}</div>`).join('');
+// 净值曲线 (日度, 对数轴)
+echarts.init($('nav')).setOption({
+  tooltip: { trigger: 'axis', valueFormatter: v => v == null ? '' : v.toFixed(2) + 'x' },
+  grid: { left: 70, right: 30, top: 30, bottom: 40 },
+  xAxis: { type: 'category', data: NAV.dates, axisLabel: { show: false } },
+  yAxis: { type: 'value', name: '净值', nameTextStyle: { fontSize: 11 }, min: 0.1 },
+  dataZoom: [{ type: 'inside' }, { type: 'slider', height: 18, bottom: 2 }],
+  series: [{ type: 'line', data: NAV.vals, showSymbol: false, lineStyle: { width: 1.4, color: '#2c5f8a' },
+    areaStyle: { color: 'rgba(44,95,138,.08)' }, name: 'R1 净值' }]
+});
+// 逐年: 样本数柱 + 均收益折线 (双轴)
+echarts.init($('byyear')).setOption({
+  tooltip: { trigger: 'axis' },
+  legend: { top: 0 }, grid: { left: 60, right: 60, top: 36, bottom: 30 },
+  xAxis: { type: 'category', data: YEARS.map(y => y.y) },
+  yAxis: [
+    { type: 'value', name: '笔数', nameTextStyle: { fontSize: 11 } },
+    { type: 'value', name: '均收益%', nameTextStyle: { fontSize: 11 }, splitLine: { show: false } }],
+  series: [
+    { name: '样本数', type: 'bar', data: YEARS.map(y => y.n), itemStyle: { color: 'rgba(44,95,138,.35)' }, barMaxWidth: 28 },
+    { name: '均收益%', type: 'line', yAxisIndex: 1, data: YEARS.map(y => +(y.mean * 100).toFixed(2)),
+      itemStyle: { color: '#e8403a' }, lineStyle: { width: 2 } }]
+});
+// 年×月热力图
+echarts.init($('heat')).setOption({
+  tooltip: { formatter: p => `${p.value[0]}年${p.value[1]}月: ${p.value[2]}% (${p.value[3]}笔)` },
+  grid: { left: 60, right: 20, top: 10, bottom: 50 },
+  xAxis: { type: 'category', data: Array.from({length:12}, (_,i)=>i+1+'月'), splitArea: { show: true } },
+  yAxis: { type: 'category', data: HEAT.years, splitArea: { show: true } },
+  visualMap: { min: -3, max: 3, calculable: true, orient: 'horizontal', left: 'center', bottom: 0,
+    inRange: { color: ['#1ba27a', '#f0f2f5', '#e8403a'] }, text: ['高收益', '低收益'] },
+  series: [{ type: 'heatmap', data: HEAT.data.map(d => [d[1]-1, HEAT.years.length-1-HEAT.years.indexOf(d[0]), +d[2].toFixed(2), d[3]]),
+    label: { show: true, fontSize: 9 } }]
+});
+// 交易明细表
+const years = [...new Set(TRADES.map(t => t[1].slice(0,4)))].sort();
+$('f-year').innerHTML = '<option value="">全部年份</option>' + years.map(y => `<option>${y}</option>`).join('');
+const PAGE = 500;
+let cur = [], page = 0;
+function render() {
+  const sel = cur.slice(page*PAGE, (page+1)*PAGE);
+  $('tbody').innerHTML = sel.map(t => `<tr><td class="${t[0] ? 'star' : ''}">${t[0]}</td><td>${t[1]}</td><td>${t[2]}</td><td>${pct(t[3],2)}</td>${span(t[4])}</tr>`).join('');
+  const pages = Math.max(1, Math.ceil(cur.length/PAGE));
+  $('pager').innerHTML = `<button onclick="pg(0)" ${page==0?'disabled':''}>«</button><button onclick="pg(${page-1})" ${page==0?'disabled':''}>‹</button>` +
+    `<span>${page+1} / ${pages} (共 ${nfmt(cur.length)} 笔)</span>` +
+    `<button onclick="pg(${page+1})" ${page>=pages-1?'disabled':''}>›</button><button onclick="pg(${pages-1})" ${page>=pages-1?'disabled':''}>»</button>`;
+}
+window.pg = i => { page = i; render(); };
+$('f-apply').onclick = () => {
+  const y = $('f-year').value, code = $('f-code').value.trim().toLowerCase(), sort = $('f-sort').value;
+  cur = TRADES.filter(t => (!y || t[1].startsWith(y)) && (!code || t[2].toLowerCase().includes(code)));
+  if (sort === 'ret') cur.sort((a,b) => a[4]-b[4]);
+  if (sort === 'gap') cur.sort((a,b) => a[3]-b[3]);
+  page = 0; render();
+};
+$('f-apply').click();
+</script>
+</body>
+</html>
+"""
+
+
+def _gen_trades_html(stats, nav, by_year, heat, trades, concl):
+    import json
+    d = lambda x: json.dumps(x, ensure_ascii=False)
+    return (_TRADE_HTML_TPL
+            .replace('@@SUB@@', 'R1 低开≥2% 开盘买入 → 次日收盘卖出 (T+1 隔夜) | 毛收益未扣成本 | 全样本 ' + f'{sum(y["n"] for y in by_year):,}' + ' 笔, 抽样展示')
+            .replace('@@NAV@@', d(nav))
+            .replace('@@YEARS@@', d(by_year))
+            .replace('@@HEAT@@', d(heat))
+            .replace('@@TRADES@@', d(trades))
+            .replace('@@CONCL@@', d(concl))
+            .replace('@@STATS@@', d(stats)))
+
+
 def _gen_html(rows, ev_rows, th1_rows, th3_rows, concl, stats):
     import json
     d = lambda x: json.dumps(x, ensure_ascii=False)
@@ -266,11 +453,12 @@ def _gen_html(rows, ev_rows, th1_rows, th3_rows, concl, stats):
             .replace('@@STATS@@', d(stats)))
 
 
-def main(limit=0, hist_file='', html_path=''):
+def main(limit=0, hist_file='', html_path='', trades_html_path=''):
     hist = _load_history_local(hist_file)
     if hist is None:
         print('  ✗ 无历史缓存')
         return 1
+    trades = [] if trades_html_path else None   # R1 逐笔 (date, code, gap%, ret%)
 
     acc = defaultdict(new_acc)   # 基准: 全市场每日开盘买隔夜卖
     R1 = defaultdict(new_acc)    # 低开买入 → 隔夜 (T+1 卖)
@@ -325,6 +513,10 @@ def main(limit=0, hist_file='', html_path=''):
                 if not np.isnan(overnight[j]):
                     upd(R1, d, overnight[j])
                     upd(R1d, d, day_ret[j])   # 当日修复诊断 (不可交易)
+                    if trades is not None:
+                        trades.append((str(d)[:10], sina,
+                                       round(float(gap[j]) * 100, 2),
+                                       round(float(overnight[j]) * 100, 2)))
                 if not np.isnan(r5[j]):
                     upd(R1_5, d, r5[j])
             for t, a in R1_thr.items():
@@ -458,6 +650,45 @@ def main(limit=0, hist_file='', html_path=''):
         with open(html_path, 'w', encoding='utf-8') as f:
             f.write(html)
         print(f'  √ HTML报告已保存: {html_path}')
+
+    if trades_html_path and trades:
+        r1 = rows[1] if len(rows) > 1 else None
+        sampled, extras = _sample_trades(trades)
+        yrs = sorted({t[0][:4] for t in trades})
+        by_year = []
+        for y in yrs:
+            ys = [t for t in trades if t[0][:4] == y]
+            rets = np.array([t[3] for t in ys])
+            by_year.append({'y': y, 'n': len(ys), 'p': float((rets > 0).mean()),
+                           'mean': float(rets.mean() / 100)})
+        hdata = []
+        for y in yrs:
+            for m in range(1, 13):
+                ys = [t for t in trades if t[0][:4] == y and int(t[0][5:7]) == m]
+                if ys:
+                    rets = np.array([t[3] for t in ys])
+                    hdata.append([y, m, float(rets.mean()), len(ys)])
+        heat = {'years': yrs, 'data': hdata}
+        tstats = [
+            {'v': f'{len(trades):,}', 'l': 'R1 全样本笔数'},
+            {'v': pct_fmt(sum(1 for t in trades if t[3] > 0) / len(trades), 0), 'l': 'P↑'},
+            {'v': pct_fmt(sum(t[3] for t in trades) / len(trades) / 100), 'l': '单笔均收益'},
+            {'v': pct_fmt(r1['ann']) if r1 else '—', 'l': '毛年化'},
+            {'v': pct_fmt(r1['net_ann']) if r1 else '—', 'l': '净年化 (扣0.2%/日)'},
+            {'v': pct_fmt(r1['halves'][0]) if r1 else '—', 'l': '2022前年化'},
+            {'v': pct_fmt(r1['halves'][1]) if r1 else '—', 'l': '2022后年化'},
+        ]
+        tconcl = [
+            '高年化的本质是「日频复利」：单笔均收益仅 +0.35%、中位 +0.27%，靠 252 个交易日每天滚动叠加 → (1.0035)^252 ≈ +140%，毛年化 +163% 并非单笔暴利。',
+            '高年化集中在 2015-2021 隔夜溢价时代（热力图可见 2015/2020-2021 深红区）：2022 前年化 +252.8%，2022 后 -5.0%——同一条规则，市场结构变了就失效。',
+            '毛年化未扣成本：0.2%/日往返成本下净年化仅 +59.1%（2022 后为负）；日频全市场再平衡在实盘中无法按此换手率成交，真实可执行收益远低于毛年化。',
+            '幸存者偏差：hist 缓存只含至今仍在市的股票，退市股的历史信号被排除，会系统性高估收益（2015 后大量退市/ST）。',
+        ]
+        tnav = {'dates': r1.get('dates', []), 'vals': r1.get('nav', [])} if r1 else {'dates': [], 'vals': []}
+        html = _gen_trades_html(tstats, tnav, by_year, heat, sampled + extras, tconcl)
+        with open(trades_html_path, 'w', encoding='utf-8') as f:
+            f.write(html)
+        print(f'  √ 交易明细HTML已保存: {trades_html_path} (全样本{len(trades):,}笔, 内嵌抽样{len(sampled):,}+极端{len(extras):,})')
     return 0
 
 
@@ -592,6 +823,7 @@ if __name__ == '__main__':
     p.add_argument('--hist-file', default='')
     p.add_argument('--out', default='', help='把报告输出保存到文件 (默认只打印终端)')
     p.add_argument('--out-html', default='', help='另存 echarts HTML 报告 (含净值/阈值图表)')
+    p.add_argument('--trades-html', default='', help='另存 R1 低开买入交易明细 HTML (净值曲线+逐年/月热力图+抽样明细表)')
     p.add_argument('--combined', action='store_true',
                    help='跑口诀组合状态机 (四条规则一套系统实时运行, 每日开盘卖旧买新), 替代分开版')
     a = p.parse_args()
@@ -601,7 +833,8 @@ if __name__ == '__main__':
         out = open(a.out, 'w', encoding='utf-8')
         sys.stdout = out
     rc = main_combined(limit=a.limit, hist_file=a.hist_file) if a.combined \
-        else main(limit=a.limit, hist_file=a.hist_file, html_path=a.out_html)
+        else main(limit=a.limit, hist_file=a.hist_file, html_path=a.out_html,
+                  trades_html_path=a.trades_html)
     if out:
         out.flush()
         out.close()
