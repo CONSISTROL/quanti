@@ -240,8 +240,8 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         rebound_signal_func = strat.rebound_signal
     print(f"  策略: {strategy_label(strategy)}")
 
-    start_date = pd.Timestamp(start_date_str)
-    end_date = pd.Timestamp(end_date_str)
+    start_date = pd.Timestamp(start_date_str) if start_date_str else None
+    end_date = pd.Timestamp(end_date_str) if end_date_str else None
 
     # ---- 市场环境过滤 (market_filter) ----
     # market_df: 指数K线 (date/close), 指数收盘 < 指数MA20 时禁买 (持仓照旧)
@@ -322,9 +322,11 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
             for d in hist['date'].values:
                 all_dates.add(pd.Timestamp(d))
 
-    trading_dates = sorted([d for d in all_dates if start_date <= d <= end_date])
+    trading_dates = sorted([d for d in all_dates
+                            if (start_date is None or start_date <= d)
+                            and (end_date is None or d <= end_date)])
     if not trading_dates:
-        print(f"  ✗ 在 {start_date_str} ~ {end_date_str} 范围内无交易日")
+        print(f"  ✗ 在 {start_date_str or '最早'} ~ {end_date_str or '最新'} 范围内无交易日")
         return None
 
     print(f"  交易日: {trading_dates[0].strftime('%Y-%m-%d')} ~ "
@@ -1479,14 +1481,14 @@ def backtest_single_stock(code, history_dict, config, start_date_str='2025-01-01
     from indicator_cache import _incremental_indicators
     import pandas as pd
 
-    start_date = pd.Timestamp(start_date_str)
-    end_date = pd.Timestamp(end_date_str)
+    start_date = pd.Timestamp(start_date_str) if start_date_str else None
+    end_date = pd.Timestamp(end_date_str) if end_date_str else None
 
     dates_arr = hist['date'].values
     all_dates = set()
     for d in dates_arr:
         ts = pd.Timestamp(d)
-        if start_date <= ts <= end_date:
+        if (start_date is None or start_date <= ts) and (end_date is None or ts <= end_date):
             all_dates.add(ts.strftime('%Y-%m-%d'))
 
     closes = hist['close'].values.astype(float)

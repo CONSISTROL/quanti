@@ -97,7 +97,7 @@ def main(config=None):
 
     from trading_engine import run_swing_backtest, print_trade_summary
     start = config.get('backtest', {}).get('start_date', '2025-01-01')
-    end = config.get('backtest', {}).get('end_date', '2026-08-02')
+    end = config.get('backtest', {}).get('end_date', '') or ''  # 空 = 自动用数据最新交易日
 
     result = run_swing_backtest(
         hist, scored_df, tr_cfg,
