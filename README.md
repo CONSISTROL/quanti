@@ -113,6 +113,7 @@ python run_test.py --list                 # 列出所有测试
 | **grid_search_hybrid** | 混合策略参数搜索 |
 | **run_20_stocks** | 20支股票批量回测（按 test.strategy 策略）|
 | **intraday_t** | 日内做T子系统（5分钟K线多策略回测，新浪数据源，收益/胜率）|
+| **rubber_leader** | 橡胶板块龙头分析（60日主力洗盘建仓识别 + 放量信号 + 龙头评分）|
 
 **自选池轮动回测（watchlist_backtest）**：
 
