@@ -45,8 +45,9 @@ SINA_KLINE = ('https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/
 FEE_BUY_STOCK, FEE_SELL_STOCK = 0.00026, 0.00076   # 双边合计 0.102%
 FEE_BUY_ETF, FEE_SELL_ETF = 0.00025, 0.00025       # 双边合计 0.05%
 T_AMOUNT = 10000          # 每轮做T投入金额(元), 份额按价格折算到手
-MAX_ROUNDS_PER_DAY = 1    # 每天只做一次T (用户纪律: 一次T=一买一卖配对, 卖出的必须买回)
+MAX_ROUNDS_PER_DAY = 1    # 每天最多做一次T (用户纪律: 也可选择不做, 卖出的必须买回)
 MAX_HOLD_BARS = 16        # 持仓超80分钟(16根5min)强制平仓 (强平仍配对 → 仓位守恒)
+MIN_DAY_RANGE = 0.005     # 可做可不做: 日内振幅(高-低)/开盘 < 阈值 → 当天放弃做T (波动太小赚不回手续费)
 
 # 策略配置
 STRATEGIES = {
@@ -239,8 +240,11 @@ def pair_trades(df, cfg):
 
 
 # ─── 回测主流程 ───
-def run_backtest(hist, targets):
-    """hist: {code: df}; targets: [(code, name, kind)] → results 嵌套dict"""
+def run_backtest(hist, targets, min_range=MIN_DAY_RANGE):
+    """hist: {code: df}; targets: [(code, name, kind)] → results 嵌套dict
+
+    min_range: 日波动过滤 — 日内振幅低于阈值的天数直接跳过 (可做可不做)
+    """
     # 最近N个交易日的日期序列 (全标的共同交易日)
     results = {}
     for code, name, kind in targets:
@@ -252,6 +256,11 @@ def run_backtest(hist, targets):
             if len(ddf) < 40:
                 continue
             day_str = str(day)
+            # 可做可不做: 日内振幅不足 → 当天放弃做T (波动太小, 费用都赚不回)
+            if min_range > 0:
+                day_range = (ddf['high'].max() - ddf['low'].min()) / ddf['open'].iloc[0]
+                if day_range < min_range:
+                    continue
             results[code]['daily'][day_str] = {'ohlc': ddf}
             for sname, cfg in STRATEGIES.items():
                 cfg = dict(cfg, kind=kind)
@@ -267,10 +276,12 @@ def agg_strategy(results):
     for code, r in results.items():
         for sname in STRATEGIES:
             all_t = [t for day in r['days'].values() for t in day.get(sname, [])]
+            days_done = sum(1 for day in r['days'].values() if sname in day)
+            days_avail = len(r['daily'])
             if not all_t:
                 rows.append(dict(strategy=sname, code=code, name=r['name'], kind=r['kind'],
                                  rounds=0, wins=0, win_rate=0.0, gross=0, fee=0, net=0,
-                                 turnover=0, net_ret=0.0))
+                                 turnover=0, net_ret=0.0, days_done=0, days_avail=days_avail))
                 continue
             buy_amt = sum(t['px0'] * t['shares'] for t in all_t if t['side'] == '正T') \
                 + sum(t['px1'] * t['shares'] for t in all_t if t['side'] == '倒T')
@@ -283,6 +294,7 @@ def agg_strategy(results):
                 net=round(sum(t['net'] for t in all_t), 2),
                 turnover=round(buy_amt, 0),
                 net_ret=round(sum(t['net'] for t in all_t) / buy_amt * 100, 3) if buy_amt else 0.0,
+                days_done=days_done, days_avail=days_avail,
             ))
     return pd.DataFrame(rows)
 
@@ -311,16 +323,15 @@ def print_report(agg, results):
     print('\n' + '═' * 104)
     print('  日内做T回测 (5分钟K线, 最近10个交易日, 每轮投入≈1万元, 含费用)')
     print('═' * 104)
-    print(f"  {'策略':<16}{'股票':<12}{'轮数':>5}{'胜率':>7}{'毛收益':>9}{'费用':>7}{'净收益':>9}{'净收益率':>9}  日均净利")
-    print('  ' + '─' * 100)
+    print(f"  {'策略':<16}{'股票':<12}{'做T天':>7}{'轮数':>4}{'胜率':>6}{'毛收益':>9}{'费用':>6}{'净收益':>9}{'净收益率':>9}{'日均净利':>10}")
+    print('  ' + '─' * 104)
     for sname in STRATEGIES:
         for _, row in agg[agg['strategy'] == sname].iterrows():
-            code = row['code']
-            day_n = sum(1 for d in results[code]['days'].values() if sname in d)
-            daily = row['net'] / day_n if day_n else 0.0
-            print(f"  {sname:<16}{row['name']:<12}{row['rounds']:>5}{row['win_rate']*100:>6.0f}%"
-                  f"{row['gross']:>+9.0f}{row['fee']:>7.0f}{row['net']:>+9.0f}{row['net_ret']:>+8.3f}%  {daily:>+7.0f}元/日")
-        print('  ' + '─' * 100)
+            daily = row['net'] / row['days_done'] if row['days_done'] else 0.0
+            print(f"  {sname:<16}{row['name']:<12}{row['days_done']:>3}/{row['days_avail']:<3}"
+                  f"{row['rounds']:>4}{row['win_rate']*100:>5.0f}%"
+                  f"{row['gross']:>+9.0f}{row['fee']:>6.0f}{row['net']:>+9.0f}{row['net_ret']:>+8.3f}%  {daily:>+8.0f}元/日")
+        print('  ' + '─' * 104)
 
     # 每只股票最优策略
     print('\n  每股最优策略 (按净收益):')
@@ -436,10 +447,11 @@ def gen_html(agg, results, out_path):
             if a.empty:
                 cells += '<td>—</td>'
                 continue
-            net, wr, n = a.iloc[0]['net'], a.iloc[0]['win_rate'], a.iloc[0]['rounds']
+            net, wr, n, ret = a.iloc[0]['net'], a.iloc[0]['win_rate'], a.iloc[0]['rounds'], a.iloc[0]['net_ret']
+            dd, da = a.iloc[0]['days_done'], a.iloc[0]['days_avail']
             color = '#e8403a' if net >= 0 else '#1ba27a'
-            cells += (f'<td><b style="color:{color}">{net:+.0f}元</b>'
-                      f'<br><small>{wr*100:.0f}% / {n}轮</small></td>')
+            cells += (f'<td><b style="color:{color}">{net:+.0f}元 ({ret:+.2f}%)</b>'
+                      f'<br><small>胜率{wr*100:.0f}% · {n}轮 · {dd}/{da}天</small></td>')
         rows_html += f'<tr><td><b>{code}</b> {r["name"]}</td>{cells}</tr>'
     sections.append(f'''<div class="card"><h2>做T收益汇总 (5分钟, 近10个交易日, 含费用)</h2>
 <table class="tbl"><tr><th>标的</th>{head}</tr>{rows_html}</table>
@@ -492,6 +504,8 @@ def main(config=None):
     ap = argparse.ArgumentParser(description='日内做T子系统回测')
     ap.add_argument('--targets', default='', help='做T标的(逗号分隔), 默认 600547,588170,600176')
     ap.add_argument('--days', type=int, default=10, help='最近N个交易日')
+    ap.add_argument('--min-range', type=float, default=MIN_DAY_RANGE,
+                    help=f'日波动过滤: 日内振幅(高-低)/开盘 < 阈值则当天不做T (默认{MIN_DAY_RANGE:.3f} = {MIN_DAY_RANGE*100:.1f}%)')
     ap.add_argument('--out', default='', help='终端报告输出到txt')
     ap.add_argument('--out-html', default='', help='HTML报告路径')
     args = ap.parse_args()
@@ -508,7 +522,9 @@ def main(config=None):
     print(f'  标的: {", ".join(f"{c} {n}" for c, n, _ in targets)}')
     print(f'  数据: 新浪5分钟线, 最近{args.days}个交易日')
     print(f'  费用: 股票双边0.102% (佣金+印花税), ETF双边0.05% (仅佣金); 每轮投入≈1万元')
-    print(f'  约束: T+1做T (正T卖昨日底仓/倒T买回), 当日强平不隔夜, 每日≤{MAX_ROUNDS_PER_DAY}轮')
+    print(f'  约束: T+1做T (正T卖昨日底仓/倒T买回), 当日强平不隔夜, 每天最多做{MAX_ROUNDS_PER_DAY}次T')
+    if args.min_range > 0:
+        print(f'  可做可不做: 日内振幅 < {args.min_range*100:.1f}% 的天数跳过 (波动太小赚不回手续费)')
 
     hist = fetch_min_data(codes)
     missing = [c for c in codes if c not in hist]
@@ -522,7 +538,7 @@ def main(config=None):
         keep = days[-args.days:]
         hist[c] = hist[c][hist[c]['date'].dt.date.isin(keep)].reset_index(drop=True)
 
-    results = run_backtest(hist, targets)
+    results = run_backtest(hist, targets, min_range=args.min_range)
     agg = agg_strategy(results)
 
     # 仓位守恒校验 (T+1底仓纪律: 当天卖出的买回来, 每日收盘持仓 == 初始底仓)
