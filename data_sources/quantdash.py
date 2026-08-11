@@ -79,6 +79,16 @@ class QuantDashDataSource(BaseDataSource):
                 with open(path, 'rb') as f:
                     cached = pickle.load(f)
         if cached is not None:
+            # 新鲜度检查: 缓存K线最后日期早于今天 → 过期重拉
+            # (场景: 凌晨首跑只拉到昨日K线存成当日缓存, 晚间再跑需刷新)
+            try:
+                latest = max(pd.to_datetime(df['date']).max() for df in cached.values())
+                if latest.date() < datetime.now().date():
+                    print(f'  ⚠ 缓存最后日期 {latest.date()} < 今天, 重新拉取最新数据...')
+                    cached = None
+            except Exception:
+                pass
+        if cached is not None:
             have = set(cached.keys())
             need = [c for c in codes
                     if f'sh{c}' not in have and f'sz{c}' not in have]

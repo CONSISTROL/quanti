@@ -120,7 +120,7 @@ python run_test.py --module watchlist_backtest
 ```
 
 - 自选池：`config.json` 的 `watchlist` 字段（股票/ETF/LOF 混合）
-- 数据源：按 `data.source`（quantdash 默认，前复权含份额折算）
+- 数据源：按 `data.source`（quantdash 默认，前复权含份额折算）；当日缓存过期自动刷新（缓存K线最后日期早于今天时重新拉取）
 - 规则：单持仓 100% 满仓轮动，强弱评分卖弱买强（`full_position: true` 时不做强弱分缩放）
 - 输出：组合总收益（一次回测两种口径）+ 每只个股独立回测 + ECharts 报告（净值对比/系统买卖信号点K线/用户A操作记录）
 - **报告拆分（回测后生成两份独立 HTML，分别对应一个口径）**：
