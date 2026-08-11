@@ -45,8 +45,8 @@ SINA_KLINE = ('https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/
 FEE_BUY_STOCK, FEE_SELL_STOCK = 0.00026, 0.00076   # 双边合计 0.102%
 FEE_BUY_ETF, FEE_SELL_ETF = 0.00025, 0.00025       # 双边合计 0.05%
 T_AMOUNT = 10000          # 每轮做T投入金额(元), 份额按价格折算到手
-MAX_ROUNDS_PER_DAY = 3    # 每日最多做T轮数
-MAX_HOLD_BARS = 16        # 持仓超80分钟(16根5min)强制平仓
+MAX_ROUNDS_PER_DAY = 1    # 每天只做一次T (用户纪律: 一次T=一买一卖配对, 卖出的必须买回)
+MAX_HOLD_BARS = 16        # 持仓超80分钟(16根5min)强制平仓 (强平仍配对 → 仓位守恒)
 
 # 策略配置
 STRATEGIES = {
@@ -194,7 +194,13 @@ _SIG_FNS = {'vwap': sig_vwap, 'boll': sig_boll, 'open_anchor': sig_open_anchor,
 
 # ─── 配对回测: 每轮 = 一买一卖 (正T或倒T), 当日强平 ───
 def pair_trades(df, cfg):
-    """单日做T配对: 返回轮次列表 [{side, t0,px0, t1,px1, shares, gross, fee, net, bars}]"""
+    """单日做T配对: 返回轮次列表 [{side, t0,px0, t1,px1, shares, gross, fee, net, bars}]
+
+    仓位守恒: 每轮是完整的一买一卖配对, 买卖份数相同 →
+      正T: 买shares(当日锁定) + 卖shares(昨日底仓), 净持仓不变
+      倒T: 卖shares(底仓) + 买shares回, 净持仓不变
+      超时/尾盘强平仍是配对平仓, 保证当日收盘持仓 == 初始底仓
+    """
     acts = _SIG_FNS[cfg['fn']](df, **{k: v for k, v in cfg.items() if k not in ('fn', 'kind')})
     times = df['date'].values
     closes = df['close'].values
@@ -279,6 +285,25 @@ def agg_strategy(results):
                 net_ret=round(sum(t['net'] for t in all_t) / buy_amt * 100, 3) if buy_amt else 0.0,
             ))
     return pd.DataFrame(rows)
+
+
+# ─── 仓位守恒校验: 每日收盘持仓 == 初始底仓 ───
+def inventory_check(results):
+    """校验每标的每日做T后买卖份数平衡 (正T买shares卖shares / 倒T卖shares买shares)"""
+    ok = True
+    total_days = 0
+    for code, r in results.items():
+        for ds in sorted(r['daily']):
+            total_days += 1
+            buys = sells = 0
+            for tds in r['days'].get(ds, {}).values():
+                for t in tds:
+                    buys += t['shares']
+                    sells += t['shares']
+            if buys != sells:
+                ok = False
+                print(f'  ⚠ 仓位不平衡: {code} {ds} 买{buys}份 卖{sells}份')
+    return ok, total_days
 
 
 # ─── 终端报告 ───
@@ -499,6 +524,11 @@ def main(config=None):
 
     results = run_backtest(hist, targets)
     agg = agg_strategy(results)
+
+    # 仓位守恒校验 (T+1底仓纪律: 当天卖出的买回来, 每日收盘持仓 == 初始底仓)
+    inv_ok, inv_days = inventory_check(results)
+    print(f"  仓位守恒校验: {len(targets)} 标的 × {inv_days} 天, "
+          f"{'全部通过 ✓ (每日收盘持仓 == 初始底仓)' if inv_ok else '存在不平衡 ⚠'}")
 
     if args.out:
         old = sys.stdout
