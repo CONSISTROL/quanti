@@ -112,6 +112,7 @@ python run_test.py --list                 # 列出所有测试
 | **grid_search_ref** | 参考策略参数网格搜索 |
 | **grid_search_hybrid** | 混合策略参数搜索 |
 | **run_20_stocks** | 20支股票批量回测（按 test.strategy 策略）|
+| **intraday_t** | 日内做T子系统（5分钟K线多策略回测，新浪数据源，收益/胜率）|
 
 **自选池轮动回测（watchlist_backtest）**：
 
@@ -123,7 +124,20 @@ python run_test.py --module watchlist_backtest
 - 数据源：按 `data.source`（quantdash 默认，前复权含份额折算）；当日缓存过期自动刷新（缓存K线最后日期早于今天时重新拉取）
 - 规则：单持仓 100% 满仓轮动，强弱评分卖弱买强（`full_position: true` 时不做强弱分缩放）
 - 输出：组合总收益（一次回测两种口径）+ 每只个股独立回测 + ECharts 报告（净值对比/系统买卖信号点K线/用户A操作记录）
-- **报告拆分（回测后生成两份独立 HTML，分别对应一个口径）**：
+**日内做T子系统（intraday_t）**：
+
+```bash
+python run_test.py --module intraday_t
+python tests/intraday_t.py --targets 600547,588170 --days 10 --out t.txt --out-html t.html
+```
+
+- 标的：默认 600547 山东黄金 / 588170 科创半导体ETF / 600176 中国巨石（`--targets` 可覆盖）
+- 数据：新浪 5 分钟线（实测 1 分钟线东财/腾讯在本网络不可用；5 分钟 1023 根≈21 个交易日），最近 N 个交易日（`--days`）
+- 做T规则：A股 T+1 → 底仓不动，正T（低买高卖，卖昨日底仓）/ 倒T（高卖低买）；每轮投入≈1 万元；当日强平不隔夜；每日最多 3 轮；含费用（股票双边 0.102%、ETF 双边 0.05%）
+- 策略对比：VWAP 分时均价回归 / 布林反转(20,2σ) / 开盘锚动量 / RSI14 反转——回测输出每策略×每股的轮数、胜率、毛/净收益、净收益率、日均净利，并给出每股最优策略
+- 输出：终端汇总表 + 每日明细 + HTML（每股 5min K线含做T买卖点标记、每日净利柱状图、收益汇总矩阵）
+
+**自选池轮动回测（watchlist_backtest）**：
   - `report_signal_<日期>.html`（自选池轮动为 `report_gap_open_signal_<日期>.html` 等）— **信号账户口径**：📋 系统买卖信号记录 + 信号账户统计卡片 + 信号日买卖点曲线
   - `report_exec_<日期>.html`（自选池轮动为 `report_gap_open_exec_<日期>.html` 等）— **用户操作执行口径**：📋 用户A操作记录 + 执行账户统计卡片 + 执行日买卖点曲线
   - 由 `generate_html_report(..., trade_scope='signal'|'exec')` 分别生成；两口径仓位规则不同（信号账户=按信号价满仓、同日多笔等分、不受持仓上限限制；执行账户=按策略仓位规则如 5只×20%），故数字**总是不同**——差异 = 仓位规则 + 成交时点（延迟模式 `exec_next_close`/`buy_next_close` 下再叠加成交价差异）
