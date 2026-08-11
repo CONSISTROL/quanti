@@ -54,6 +54,8 @@ STRATEGIES = {
     '布林反转(20,2σ)': {'fn': 'boll', 'n': 20, 'k': 2.0},
     '开盘锚动量(±0.4%)': {'fn': 'open_anchor', 'threshold': 0.004},
     'RSI14反转(30/70)': {'fn': 'rsi', 'n': 14, 'lo': 30, 'hi': 70},
+    'MACD金叉/死叉(5,13,8)': {'fn': 'macd', 'fast': 5, 'slow': 13, 'signal': 8},
+    'MACD金叉/死叉(12,26,9)': {'fn': 'macd', 'fast': 12, 'slow': 26, 'signal': 9},
 }
 
 
@@ -153,6 +155,23 @@ def sig_open_anchor(df, threshold=0.004):
     return np.where(ret <= -threshold, 1, np.where(ret >= threshold, -1, 0))
 
 
+def sig_macd(df, fast=12, slow=26, signal=9):
+    """MACD金叉/死叉: DIF上穿DEA买(金叉), 下穿卖(死叉)"""
+    c = df['close'].values
+    ema_f = pd.Series(c).ewm(span=fast, adjust=False).mean()
+    ema_s = pd.Series(c).ewm(span=slow, adjust=False).mean()
+    dif = (ema_f - ema_s).values
+    dea = pd.Series(dif).ewm(span=signal, adjust=False).mean().values
+    acts = np.zeros(len(c), dtype=int)
+    for i in range(1, len(c)):
+        if dif[i] > dea[i] and dif[i - 1] <= dea[i - 1]:
+            acts[i] = 1
+        elif dif[i] < dea[i] and dif[i - 1] >= dea[i - 1]:
+            acts[i] = -1
+    acts[:slow] = 0  # 前slow根无有效值
+    return acts
+
+
 def sig_rsi(df, n=14, lo=30, hi=70):
     """RSI超买超卖: RSI<lo买, >hi卖"""
     c = df['close'].values
@@ -169,7 +188,8 @@ def sig_rsi(df, n=14, lo=30, hi=70):
     return acts
 
 
-_SIG_FNS = {'vwap': sig_vwap, 'boll': sig_boll, 'open_anchor': sig_open_anchor, 'rsi': sig_rsi}
+_SIG_FNS = {'vwap': sig_vwap, 'boll': sig_boll, 'open_anchor': sig_open_anchor,
+            'rsi': sig_rsi, 'macd': sig_macd}
 
 
 # ─── 配对回测: 每轮 = 一买一卖 (正T或倒T), 当日强平 ───
