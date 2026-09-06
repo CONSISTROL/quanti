@@ -1,4 +1,4 @@
-﻿"""FastAPI application for the Quanti Web Console.
+"""FastAPI application for the Quanti Web Console.
 
 Run from repository root:
     uvicorn backend.app:app --host 0.0.0.0 --port 8000
@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -25,9 +26,21 @@ REPORT_RE = re.compile(r"^report_.+\.(html?|txt|json)$")
 REPORTS_DIR = ROOT / "reports"
 
 from backend import runners  # noqa: E402
+from backend.intraday_t_monitor import intraday_monitor  # noqa: E402
 from backend.jobs import JobManager  # noqa: E402
 
-app = FastAPI(title="Quanti Web Console", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start the watchlist intraday-T monitor with the web service."""
+    intraday_monitor.start()
+    try:
+        yield
+    finally:
+        intraday_monitor.stop()
+
+
+app = FastAPI(title="Quanti Web Console", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -99,6 +112,41 @@ def portfolio_optimize(body: PortfolioOptimizeRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.get("/api/intraday-monitor/status")
+def intraday_monitor_status():
+    return intraday_monitor.status()
+
+
+@app.post("/api/intraday-monitor/start")
+def intraday_monitor_start():
+    ok = intraday_monitor.start()
+    return {"ok": ok, **intraday_monitor.status()}
+
+
+@app.post("/api/intraday-monitor/stop")
+def intraday_monitor_stop():
+    was_running = intraday_monitor.stop()
+    return {"was_running": was_running, **intraday_monitor.status()}
+
+
+@app.get("/api/intraday-t/{code}")
+def intraday_t(code: str, max_days: int = Query(30, ge=5, le=120)):
+    try:
+        from backend.intraday_t_decision import intraday_t_decision
+        return intraday_t_decision(code, max_days=max_days)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+
+@app.get("/api/intraday-t/{code}/detail")
+def intraday_t_detail(code: str, date: str):
+    try:
+        from backend.intraday_t_decision import intraday_day_detail
+        return intraday_day_detail(code, date)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.get("/api/config")
 def get_config():
     return _load_config()
@@ -166,7 +214,7 @@ def _data_sources():
 
 @app.get("/api/kline/{code}")
 def kline(code: str, strategy: Optional[str] = None, max_bars: int = Query(500, ge=100, le=5000),
-          interval: str = Query("1d", pattern="^(1d|1w|1M|5m|15m|30m|60m)$"),
+          interval: str = Query("1d", pattern="^(1d|1w|1M|1m|5m|15m|30m|60m)$"),
           refresh: bool = False):
     try:
         from backend.kline import get_kline_data

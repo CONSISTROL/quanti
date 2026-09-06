@@ -32,6 +32,10 @@
           <el-icon><DataLine /></el-icon>
           <span>个股决策</span>
         </el-menu-item>
+        <el-menu-item index="/intraday-t">
+          <el-icon><AlarmClock /></el-icon>
+          <span>日内做T</span>
+        </el-menu-item>
         <el-menu-item index="/backtest">
           <el-icon><TrendCharts /></el-icon>
           <span>组合决策</span>

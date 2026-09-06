@@ -134,6 +134,7 @@ MINUTE_INTERVALS = {
 
 
 
+    "1m": (1, "1分钟"),
     "5m": (5, "5分钟"),
 
 
@@ -653,6 +654,41 @@ _MINUTE_TTL = {5: 120, 15: 300, 30: 600, 60: 1800}
 
 
 
+
+
+def _fetch_tencent_1m(code: str, max_bars: int = 320, refresh: bool = False) -> pd.DataFrame:
+    """Fetch recent 1-minute bars from Tencent (approximately 320 bars)."""
+    ttl = 60
+    if not refresh:
+        cached = _read_df_cache(code, "tencent1m", ttl)
+        if cached is not None and len(cached) >= min(int(max_bars), 320):
+            return cached
+    sym = _sina_symbol(code)
+    requested = min(int(max_bars), 320)
+    resp = requests.get(
+        "https://ifzq.gtimg.cn/appstock/app/kline/mkline",
+        params={"param": f"{sym},m1,,{requested}"},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json().get("data", {}).get(sym, {})
+    rows = data.get("m1") or []
+    if not rows:
+        raise ValueError(f"{code} 无1分钟数据")
+    out = []
+    for row in rows:
+        try:
+            out.append([pd.to_datetime(row[0], format="%Y%m%d%H%M"),
+                        float(row[1]), float(row[2]), float(row[3]), float(row[4]), float(row[5])])
+        except Exception:
+            continue
+    df = pd.DataFrame(out, columns=["date", "open", "high", "low", "close", "volume"])
+    if len(df) < 10:
+        raise ValueError(f"{code} 1分钟数据不足")
+    df = df.dropna().reset_index(drop=True)
+    _write_df_cache(code, "tencent1m", df)
+    return df
 
 
 def _fetch_sina_minute(code: str, scale: int, refresh: bool = False, max_bars: int = 1023) -> pd.DataFrame:
@@ -1753,7 +1789,10 @@ def _get_minute_kline_data(code: str, interval: str, max_bars: int,
 
 
 
-    df = _fetch_sina_minute(code, scale, refresh=refresh, max_bars=max_bars)
+    if interval == "1m":
+        df = _fetch_tencent_1m(code, max_bars=max_bars, refresh=refresh)
+    else:
+        df = _fetch_sina_minute(code, scale, refresh=refresh, max_bars=max_bars)
 
 
 

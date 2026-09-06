@@ -42,6 +42,12 @@
       />
     </el-card>
 
+    <el-card v-if="running" shadow="never" style="margin-top: 16px">
+      <template #header><span>组合优化进度</span></template>
+      <el-progress :percentage="100" :indeterminate="true" :duration="2" :show-text="false" style="margin-bottom: 12px" />
+      <div class="log-box">{{ progressLogs.join('\n') || '准备中...' }}</div>
+    </el-card>
+
     <template v-if="result">
       <el-card shadow="never" style="margin-top: 16px">
         <template #header>
@@ -107,7 +113,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { api } from '../api'
 
 const watchlist = ref([])
@@ -117,6 +123,25 @@ const running = ref(false)
 const result = ref(null)
 const error = ref('')
 const stockNames = ref({})
+const progressLogs = ref([])
+let progressTimer = null
+
+function pushLog(msg) {
+  progressLogs.value.push(msg)
+}
+
+function startFakeProgress() {
+  progressLogs.value = ['拉取自选池日线行情...']
+  progressTimer = setTimeout(() => pushLog('构建收益/成交量/价格矩阵...'), 1500)
+  setTimeout(() => pushLog('运行 Cvxportfolio 优化与回测...'), 3500)
+}
+
+function stopProgress() {
+  if (progressTimer) clearTimeout(progressTimer)
+  progressTimer = null
+}
+
+onBeforeUnmount(stopProgress)
 
 async function loadNames(codes) {
   const unique = [...new Set((codes || []).filter(Boolean).map(c => String(c).replace(/\D/g, '').padStart(6, '0')))]
@@ -163,6 +188,8 @@ async function run() {
   }
   running.value = true
   error.value = ''
+  stopProgress()
+  startFakeProgress()
   try {
     result.value = await api.portfolioOptimize({
       watchlist: watchlist.value,
@@ -173,10 +200,13 @@ async function run() {
       .concat(Object.keys(result.value?.latest_trades || {}))
       .concat((result.value?.trade_history || []).map(r => r.code))
     loadNames(codes)
+    pushLog('优化完成')
   } catch (e) {
     error.value = e.message
     result.value = null
+    pushLog('优化失败: ' + e.message)
   } finally {
+    stopProgress()
     running.value = false
   }
 }
@@ -209,4 +239,17 @@ function fmtMoney(v) {
 }
 .up { color: #e8403a; }
 .down { color: #1ba27a; }
+.log-box {
+  background: #0f172a;
+  color: #d1e7ff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 180px;
+  overflow: auto;
+}
 </style>

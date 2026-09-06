@@ -44,6 +44,7 @@
         />
         <span class="muted">根K线</span>
         <el-select v-model="interval" style="width: 130px">
+          <el-option label="1分钟" value="1m" />
           <el-option label="5分钟" value="5m" />
           <el-option label="15分钟" value="15m" />
           <el-option label="30分钟" value="30m" />
@@ -198,7 +199,7 @@ const minuteStrategies = [
   { value: 'boll', label: '布林反转' },
   { value: 'contrarian', label: '追涨杀跌反指' }
 ]
-const isMinute = computed(() => ['5m', '15m', '30m', '60m'].includes(interval.value))
+const isMinute = computed(() => ['1m', '5m', '15m', '30m', '60m'].includes(interval.value))
 const data = ref(null)
 const loading = ref(false)
 const error = ref('')
