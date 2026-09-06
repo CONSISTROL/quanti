@@ -73,7 +73,7 @@ def _sector_relative(hist, code, ind, fin):
     """行业相对强弱: 同行业股票 20/60 日动量分布, 该股所处百分位"""
     if not ind or fin is None or '所处行业' not in fin.columns or '股票代码' not in fin.columns:
         return None
-    from data_fetcher import _code_pure
+    from quantlab.data_fetcher import _code_pure
     peers = {str(r['股票代码']).zfill(6) for _, r in fin.iterrows()
              if str(r.get('所处行业', '')) == ind}
     r20, r60 = [], []
@@ -137,7 +137,7 @@ def _history_patterns(c, v):
 
 
 def main(code='002384', hist_file=''):
-    from data_fetcher import _code_pure
+    from quantlab.data_fetcher import _code_pure
     hist = _load_history_local(hist_file)
     if not hist:
         print('  ✗ 无历史缓存')
@@ -192,14 +192,14 @@ def main(code='002384', hist_file=''):
     print(f'  近10日: {lim_dn} 次跌停 / {lim_up} 次涨停')
 
     # ---- 2. 技术面 ----
-    from indicator_cache import _incremental_indicators
+    from quantlab.indicator_cache import _incremental_indicators
     all_dates = {pd.Timestamp(d).strftime('%Y-%m-%d') for d in dts}
     pre = _incremental_indicators(
         c, v, df['high'].values.astype(float) if 'high' in df.columns else c,
         df['low'].values.astype(float) if 'low' in df.columns else c,
         df['date'].values, all_dates)
     last = pre[dts[-1].strftime('%Y-%m-%d')]
-    from price_targets import compute_technical_levels
+    from quantlab.price_targets import compute_technical_levels
     lv = compute_technical_levels(df, close)
     ma5, ma20, ma60 = last['ma5'], last['ma20'], last['ma60']
     ma120, ma250 = last['ma120'], lv.get('ma250', np.nan)

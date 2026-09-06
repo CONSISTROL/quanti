@@ -1,0 +1,2 @@
+# Optional portfolio optimization dependencies
+cvxportfolio>=1.5.0

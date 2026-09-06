@@ -21,6 +21,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import json
 
+# 兼容 Windows GBK 控制台，避免 ▶/中文等字符触发 UnicodeEncodeError
+if hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 
 def list_tests():
     """列出 tests/ 下所有可用测试模块"""

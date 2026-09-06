@@ -1,0 +1,54 @@
+:root {
+  --app-bg: #f0f2f5;
+  --app-sidebar-bg: #1e293b;
+  --app-text: #1f2329;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--app-bg);
+  color: var(--app-text);
+}
+
+#app {
+  min-height: 100vh;
+}
+
+.page {
+  padding: 16px;
+}
+
+.muted {
+  color: #86909c;
+  font-size: 13px;
+}
+
+.stat-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fff;
+  border-radius: 10px;
+  padding: 18px 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+
+.log-box {
+  background: #0f172a;
+  color: #d1e7ff;
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-family: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 480px;
+  overflow: auto;
+}

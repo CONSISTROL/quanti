@@ -16,7 +16,7 @@ from tqdm import tqdm
 from datetime import datetime, timedelta
 
 
-from strategies import get_strategy, strategy_label
+from quantlab.strategies import get_strategy, strategy_label
 
 
 def fmt_px(v):
@@ -234,7 +234,7 @@ def run_swing_backtest(history_dict, scored_df, config, start_date_str='2026-01-
         strat.gap_max = float(config['gap_max'])
     buy_signal_func = strat.buy_signal
     sell_signal_func = strat.sell_signal
-    from strategies.base import BaseStrategy  # 判断是否覆写了rebound
+    from quantlab.strategies.base import BaseStrategy  # 判断是否覆写了rebound
     has_rebound = type(strat).rebound_signal is not BaseStrategy.rebound_signal
     if has_rebound:
         rebound_signal_func = strat.rebound_signal
@@ -1366,7 +1366,7 @@ def generate_equity_chart(result, scope='signal'):
     if not eq_curve:
         return ''
 
-    from report_echarts import echarts_script, UP, DOWN, GRID, TEXT, BLUE, GRAY
+    from quantlab.reports.echarts import echarts_script, UP, DOWN, GRID, TEXT, BLUE, GRAY
 
     dates = [pd.Timestamp(e[0]).strftime('%Y-%m-%d') for e in eq_curve]
     values = [e[1] for e in eq_curve]
@@ -1458,7 +1458,7 @@ def backtest_single_stock(code, history_dict, config, start_date_str='2025-01-01
 
     用法: python main.py --stock 601857  (回测中国石油)
     """
-    from data_fetcher import _code_pure
+    from quantlab.data_fetcher import _code_pure
 
     # 查找sina代码
     sina_code = None
@@ -1478,7 +1478,7 @@ def backtest_single_stock(code, history_dict, config, start_date_str='2025-01-01
         return None
 
     # 构建单只股票的precomputed
-    from indicator_cache import _incremental_indicators
+    from quantlab.indicator_cache import _incremental_indicators
     import pandas as pd
 
     start_date = pd.Timestamp(start_date_str) if start_date_str else None
@@ -1516,10 +1516,10 @@ def backtest_single_stock(code, history_dict, config, start_date_str='2025-01-01
 
     # 获取股票名称
     try:
-        from data_fetcher import fetch_spot_data
+        from quantlab.data_fetcher import fetch_spot_data
         spot = fetch_spot_data('cache', True)
         if spot is not None:
-            from data_fetcher import _find_column
+            from quantlab.data_fetcher import _find_column
             code_col = _find_column(spot, ['代码'])
             name_col = _find_column(spot, ['名称'])
             if code_col and name_col:

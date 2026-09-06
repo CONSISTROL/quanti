@@ -14,7 +14,7 @@ import io
 import pandas as pd
 import numpy as np
 
-from main import load_config
+from quantlab.cli.main import load_config
 
 START, END = '2025-01-01', '2026-08-01'
 
@@ -25,13 +25,13 @@ def main(config=None, strategy=None):
     tr_cfg = config.get('trading', {})
     sc_cfg = config.get('scoring', {})
     strategy = strategy or (config or {}).get('test', {}).get('strategy', 'reversal')
-    from strategies import strategy_label
+    from quantlab.strategies import strategy_label
     print("╔══════════════════════════════════════════════════╗")
     print(f"║  20支股票回测 ({START} ~ {END})  策略: {strategy_label(strategy)}  ║")
     print("╚══════════════════════════════════════════════════╝")
 
     # ---- 1. 数据采集 (缓存) ----
-    from data_fetcher import fetch_all_data
+    from quantlab.data_fetcher import fetch_all_data
     class Args: pass
     args = Args()
     args.cache_dir = 'cache'; args.no_cache = False; args.no_history = False
@@ -46,7 +46,7 @@ def main(config=None, strategy=None):
     print(f"  ✅ 历史数据: {len(data['history'])} 只")
 
     # ---- 2. 综合打分选TOP20 ----
-    from factor_model import calculate_all_factors, score_stocks
+    from quantlab.factor_model import calculate_all_factors, score_stocks
     weights_str = sc_cfg.get('weights', '0.25,0.20,0.25,0.20,0.10')
     w_vals = [float(x) for x in weights_str.split(',')]
     if abs(sum(w_vals) - 1.0) > 0.01:
@@ -64,7 +64,7 @@ def main(config=None, strategy=None):
         print(f"  {int(row.get('rank', 0)):>3}. {str(row.get('code', '')).zfill(6)} {row.get('name', '')}  得分{row.get('composite_score', 0):.2f}")
 
     # ---- 3. 逐只回测 (策略由 config 决定) ----
-    from trading_engine import backtest_single_stock
+    from quantlab.trading_engine import backtest_single_stock
 
     print(f"\n📈 逐只回测 ({START} ~ {END})...")
     results = []

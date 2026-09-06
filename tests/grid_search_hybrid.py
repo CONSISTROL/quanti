@@ -29,7 +29,7 @@ def main(config=None):
     highs = df['high'].values.astype(float)
     lows = df['low'].values.astype(float)
 
-    from indicator_cache import _incremental_indicators
+    from quantlab.indicator_cache import _incremental_indicators
     all_dates = set(pd.Timestamp(d).strftime('%Y-%m-%d') for d in dates_arr)
     res = _incremental_indicators(closes, volumes, highs, lows, dates_arr, all_dates)
 

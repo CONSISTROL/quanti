@@ -930,7 +930,7 @@ def ai_analyze_strategy(comparison_results, api_key=None, holding_periods=None):
 
 def _generate_swing_charts(result):
     """生成波段回测图表 (dict结构 from run_swing_backtest) — ECharts"""
-    from report_echarts import echarts_script, UP, DOWN, GRID, TEXT, BLUE, GRAY
+    from quantlab.reports.echarts import echarts_script, UP, DOWN, GRID, TEXT, BLUE, GRAY
     charts = []
 
     equity_curve = result.get('equity_curve', [])
@@ -1003,7 +1003,7 @@ def generate_backtest_charts(result):
     if isinstance(result, dict):
         return _generate_swing_charts(result)
 
-    from report_echarts import echarts_script, UP, DOWN, GRID, TEXT, BLUE, GRAY
+    from quantlab.reports.echarts import echarts_script, UP, DOWN, GRID, TEXT, BLUE, GRAY
     charts = []
     colors = {'strategy': BLUE, 'benchmark': GRAY}
 

@@ -16,7 +16,7 @@ def _run_single_backtest(args):
 
     import io, pickle
     from contextlib import redirect_stdout
-    from trading_engine import run_swing_backtest
+    from quantlab.trading_engine import run_swing_backtest
 
     # 从文件加载预计算数据
     precomputed = None

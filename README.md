@@ -1,4 +1,4 @@
-# A股波段交易系统 v4.0
+﻿# A股波段交易系统 v4.0
 
 一键运行的A股波段交易系统。`python main.py` 即可完成：数据采集 → 因子打分 → 回测验证 → 生成报告。所有参数通过 `config.json` 配置。
 
@@ -534,46 +534,102 @@ Sharpe:     2.30
 
 **缓存注意**: 修改 `data.hist_days` 后需删除当日缓存 `cache/quantdash_watchlist_YYYYMMDD.pkl`, 否则仍从旧缓存读取。
 
+## Web 控制台 (Vue3 + FastAPI)
+
+新增的 Web 控制台把常见操作搬进浏览器：查看/编辑 `config.json`、启动自选池/个股回测或测试模块、实时查看任务日志、查看历史报告，并对结构化回测结果直接渲染 ECharts 图表。
+
+### 一键启动（推荐）
+
+首次运行会自动创建 `.venv`、安装 Python 依赖、构建前端并启动服务：
+
+```bash
+# Windows
+start_web.bat
+
+# Linux / macOS
+chmod +x start_web.sh
+./start_web.sh
+```
+
+或直接跨平台运行：
+
+```bash
+python start_web.py
+```
+
+启动后访问 `http://127.0.0.1:8000`。
+
+常用参数：
+
+```bash
+python start_web.py --install    # 强制重装 Python 依赖
+python start_web.py --build      # 强制重新构建前端
+python start_web.py --port 9000  # 自定义端口
+```
+
+### 手动启动
+
+```bash
+# 1. 安装后端依赖（若已在 venv 中请先激活）
+python -m pip install -r requirements-web.txt
+
+# 2. 安装并构建前端
+cd frontend
+npm install
+npm run build
+cd ..
+
+# 3. 启动 Web 控制台（自动托管 frontend/dist + API）
+python run_web.py
+```
+
+访问 `http://<服务器IP>:8000`。
+
+开发模式（前端热更新）：
+
+```bash
+# 终端 1：后端 API
+python run_web.py --reload
+
+# 终端 2：Vite dev server（/api 已代理到 8000）
+cd frontend
+npm run dev
+# 访问 http://localhost:5173
+```
+
+> 注意：Web 控制台一次只运行一个后台任务，因为现有量化模块大量使用全局 `print`，并发会混日志。
+
+后端代码在 `backend/`，前端代码在 `frontend/`，原有 CLI 全部保留不受影响。
+
 ## 项目结构
 
 ```
-├── main.py              # 入口 (python main.py / --stock / --optimize)
-├── run_test.py          # 测试运行器 (运行 config test.module 指定的测试)
+```
+├── main.py              # CLI 入口 (python main.py / --stock / --optimize)
+├── run_test.py          # 测试运行器入口 (python run_test.py)
+├── run_web.py           # Web 控制台入口 (FastAPI + 托管 Vue dist)
+├── start_web.py/.sh/.bat# 一键启动脚本
 ├── config.json          # 配置 (所有参数, 含策略/测试选择)
-├── tests/               # 测试套件 (config test.module 选择)
-│   ├── verify_signals.py    # 7信号验证
-│   ├── backtest_user.py     # 用户波段策略回测
-│   ├── grid_search_ref.py   # 参考策略参数搜索
-│   ├── grid_search_hybrid.py# 混合策略参数搜索
-│   └── run_20_stocks.py     # 20支股票批量回测
-├── strategies/          # 策略注册表 (config trading.strategy 选择)
-│   ├── __init__.py      #   注册表: reversal/momentum/bollinger
-│   ├── base.py          #   策略基类 (buy_signal/sell_signal/rebound_signal)
-│   ├── reversal.py      #   弱转强趋势 (周线触底四要素+右侧确认+超跌反弹)
-│   ├── momentum.py      #   动量趋势 (龙头+SKDJ超卖金叉)
-│   └── bollinger.py     #   布林线均值回归
-├── trading_engine.py    # 波段交易引擎 (回测, 按config选择策略)
-├── indicator_cache.py   # 指标预计算与缓存 (SKDJ/MACD/周线, 秒级加载)
-├── data_fetcher.py      # 数据采集 (AkShare/新浪, 缓存) — 全市场扫描用
-├── data_sources/        # 数据源注册表 (config data.source 选择)
-│   ├── __init__.py      #   注册表: quantdash(默认)/sina
-│   ├── base.py          #   数据源基类 (统一 fetch_watchlist_data 接口)
-│   ├── quantdash.py     #   QuantDash API (个股/ETF前复权) [推荐]
-│   ├── sina.py          #   新浪V8 + 新浪ETF
-│   └── tencent.py       #   腾讯LOF回退 (两源共用)
-├── factor_model.py      # 因子计算+打分
-├── report_generator.py  # HTML报告生成
-├── backtest.py          # Walk-forward回测框架 + 图表
-├── optimizer.py         # 参数优化 (--optimize)
-├── price_targets.py     # 买卖参考价
-├── close_check.py       # 收盘前检查 (15:57实时价→买卖信号→飞书推送)
-├── sell_price_forecast.py # 次日买卖触发价预测 (网格模拟临界价)
-├── daily_plan.py        # 次日操作计划 (卖出触发价+切标候选)
-├── run_20_stocks.py     # 批量回测TOP20股票 (实验工具)
-├── strategy_ref.py      # 参考策略信号验证 (实验工具)
-├── grid_search_ref.py   # 参考策略参数搜索 (实验工具)
-├── grid_search_hybrid.py# 混合策略参数搜索 (实验工具)
+├── quantlab/            # 核心量化库 (分层组织)
+│   ├── cli/             # CLI 实现
+│   │   └── main.py      #   main 业务逻辑 (原 main.py)
+│   ├── data_fetcher.py  #   数据采集 (AkShare/新浪, 全市场扫描)
+│   ├── factor_model.py  #   因子计算 + 多因子打分
+│   ├── indicator_cache.py#  指标预计算与缓存
+│   ├── trading_engine.py#   波段交易引擎
+│   ├── backtest.py      #   Walk-forward 回测框架
+│   ├── optimizer.py     #   参数优化
+│   ├── strategies/      #   策略注册表 (reversal/momentum/watchlist/...)
+│   ├── data_sources/    #   数据源注册表 (quantdash/sina/tencent)
+│   └── reports/         #   报告生成
+│       ├── echarts.py   #     ECharts 报告
+│       └── generator.py #     HTML 报告
+├── backend/             # FastAPI API + 后台任务/结构化回测 runner
+├── reports/             # 历史/导出的 HTML/TXT 报告（自动生成）
+├── frontend/            # Vue3 + Vite + Element Plus + ECharts 前端
+├── tests/               # 测试/研究套件 (config test.module 选择)
 └── cache/               # 数据缓存 (行情/财报/指标)
+```
 ```
 
 ## 技术指标

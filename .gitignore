@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -12,12 +12,18 @@ cache/
 config.json
 
 # Reports
+reports/
 report_*.html
 选股结果*.csv
 
 # Virtual environment
 venv/
+.venv/
 .env/
+
+# Frontend
+node_modules/
+frontend/dist/
 
 # IDE
 .vscode/

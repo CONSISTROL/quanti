@@ -85,7 +85,7 @@ def _load_financial():
 
 
 def main(limit=0, hist_file=''):
-    from data_fetcher import _code_pure
+    from quantlab.data_fetcher import _code_pure
     hist = _load_history_local(hist_file)
     if hist is None:
         print('  ✗ 无历史缓存')

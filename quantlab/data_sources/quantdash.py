@@ -50,7 +50,7 @@ def _qd_client(api_key=None):
         api_key = os.environ.get('QUANTDASH_API_KEY')
     if api_key is None:
         try:
-            from main import load_config
+            from quantlab.cli.main import load_config
             cfg = load_config()
             api_key = cfg.get('data', {}).get('quantdash_key')
         except Exception:
@@ -79,12 +79,13 @@ class QuantDashDataSource(BaseDataSource):
                 with open(path, 'rb') as f:
                     cached = pickle.load(f)
         if cached is not None:
-            # 新鲜度检查: 缓存K线最后日期早于今天 → 过期重拉
-            # (场景: 凌晨首跑只拉到昨日K线存成当日缓存, 晚间再跑需刷新)
+            # 持久化策略：缓存数据在 3 个自然日内都直接复用，避免周末/重复请求
+            # 频繁触发外部 API 限流。超过 3 天才重新拉取最新数据。
             try:
                 latest = max(pd.to_datetime(df['date']).max() for df in cached.values())
-                if latest.date() < datetime.now().date():
-                    print(f'  ⚠ 缓存最后日期 {latest.date()} < 今天, 重新拉取最新数据...')
+                stale_days = (datetime.now().date() - latest.date()).days
+                if stale_days > 3:
+                    print(f'  ⚠ 缓存最后日期 {latest.date()} 已超过3天, 重新拉取最新数据...')
                     cached = None
             except Exception:
                 pass

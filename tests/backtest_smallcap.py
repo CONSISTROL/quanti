@@ -127,7 +127,7 @@ def main(days=0, hist_file='', start_date=''):
         print('  ✗ 无历史数据')
         return 1
 
-    from data_fetcher import _code_pure
+    from quantlab.data_fetcher import _code_pure
     pure_to_sina = {_code_pure(s): s for s in hist}
     hist_pure = {}
     for c, s in pure_to_sina.items():

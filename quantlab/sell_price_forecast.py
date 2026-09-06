@@ -6,8 +6,8 @@
       临界价, 给出明日的持有区间与切标买入触发价.
 
 用法: 由 tests/watchlist_backtest.py 自动调用, 也可独立使用:
-    from sell_price_forecast import next_sell_prices, next_buy_prices
-    from strategies import get_strategy
+    from quantlab.sell_price_forecast import next_sell_prices, next_buy_prices
+    from quantlab.strategies import get_strategy
     info = next_sell_prices(df, entry_price=1.42, strategy=get_strategy('watchlist'))
     buy  = next_buy_prices(df, strategy, bonus=2, min_buy_score=4)
 """
@@ -16,7 +16,7 @@ import numpy as np
 
 def _ind_with_next_close(closes, vols, highs, lows, base_vol, p):
     """构造"明日收盘价=p"的假想bar追加到序列末尾, 重算完整技术指标"""
-    from trading_engine import compute_indicators
+    from quantlab.trading_engine import compute_indicators
     last = closes[-1]
     c2 = np.append(closes, p)
     h2 = np.append(highs, max(last, p))   # 假想明日bar: 平开, 高低按P
@@ -48,7 +48,7 @@ def next_sell_prices(df, entry_price, strategy):
               趋势价 = 跌破MA20触发临界 (明日收盘≤此价卖出, None=今日未临近)
               死叉价 = SKDJ高位死叉触发临界 (明日收盘≥此价卖出, None=今日指标未支持)
     """
-    from trading_engine import compute_indicators
+    from quantlab.trading_engine import compute_indicators
 
     closes, vols, highs, lows, base_vol = _tail_arrays(df)
     last = closes[-1]
@@ -104,7 +104,7 @@ def next_buy_prices(df, strategy, bonus=0, min_buy_score=4):
               已触发=True → 今日收盘已满足买入条件, 明日开盘即可买
               方向: 'above' 收盘≥触发价 / 'below' 收盘≤触发价 / 'both' 两向均可 / 'none' 明日不触发
     """
-    from trading_engine import compute_indicators
+    from quantlab.trading_engine import compute_indicators
 
     closes, vols, highs, lows, base_vol = _tail_arrays(df)
     last = closes[-1]

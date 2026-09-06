@@ -57,7 +57,7 @@ RUBBER_STOCKS = [
 
 def fetch_data(codes, days=60):
     """quantdash 前复权日线, 取最近 days 个交易日; 单只超时失败自动重试"""
-    from data_sources import get_data_source
+    from quantlab.data_sources import get_data_source
     ds = get_data_source('quantdash')
     out = {}
     need = list(codes)
@@ -278,7 +278,7 @@ def main():
 
 
 def gen_html(rows, hist, top_n, out_path):
-    from report_echarts import echarts_script, ECHARTS_CDN
+    from quantlab.reports.echarts import echarts_script, ECHARTS_CDN
 
     valid = [r for r in rows if r['ok']]
     # 评分排名柱状图

@@ -36,8 +36,8 @@ def main(config=None, stock=None, strategy=None, cache_path='cache/hist_batch_20
         cache_path = files[-1]
         print(f'  ✓ 指定快照不存在, 自动使用最新快照: {cache_path}')
 
-    from indicator_cache import _incremental_indicators
-    from strategies import get_strategy, strategy_label
+    from quantlab.indicator_cache import _incremental_indicators
+    from quantlab.strategies import get_strategy, strategy_label
 
     hist = pickle.load(open(cache_path, 'rb'))
     df = None

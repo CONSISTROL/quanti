@@ -12,13 +12,13 @@
       "trading": { ..., "positions": [{"code": "159941", "entry": 1.42}] }
 
 用法: 由 tests/watchlist_backtest.py 第5.6节自动输出, 也可独立使用:
-    from daily_plan import build_nextday_plan, print_nextday_plan
+    from quantlab.daily_plan import build_nextday_plan, print_nextday_plan
     plan = build_nextday_plan(hist, precomputed, names, config, strategy, scored_df, positions)
     print_nextday_plan(plan)
 """
-from data_fetcher import _code_pure
-from sell_price_forecast import next_sell_prices, next_buy_prices
-from trading_engine import fmt_px
+from quantlab.data_fetcher import _code_pure
+from quantlab.sell_price_forecast import next_sell_prices, next_buy_prices
+from quantlab.trading_engine import fmt_px
 
 
 def build_nextday_plan(hist, precomputed, names, config, strategy, scored_df, positions):

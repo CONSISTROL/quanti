@@ -82,7 +82,7 @@ class SinaDataSource(BaseDataSource):
         if others:
             print(f'  → 新浪 拉取 {len(others)} 只 (个股/ETF)...')
             # 初始化 V8 + Session (单进程下默认未初始化)
-            from data_fetcher import _fast_fetch_stock_history, _init_worker
+            from quantlab.data_fetcher import _fast_fetch_stock_history, _init_worker
             try:
                 _init_worker()
             except Exception:

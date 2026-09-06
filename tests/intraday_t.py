@@ -433,7 +433,7 @@ def _daily_bar_option(daily_nets, name):
 
 
 def gen_html(agg, results, out_path):
-    from report_echarts import echarts_script, ECHARTS_CDN
+    from quantlab.reports.echarts import echarts_script, ECHARTS_CDN
     code_list = list(results)
     sections = []
     # 汇总表

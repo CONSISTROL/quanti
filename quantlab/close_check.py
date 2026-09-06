@@ -35,9 +35,9 @@ import numpy as np
 import pandas as pd
 import requests
 
-from data_fetcher import _code_pure
-from trading_engine import compute_indicators, Position
-from strategies import get_strategy
+from quantlab.data_fetcher import _code_pure
+from quantlab.trading_engine import compute_indicators, Position
+from quantlab.strategies import get_strategy
 
 # Windows GBK 控制台保护: ✓/⚠ 等 Unicode 符号直接 print 会报错
 if hasattr(sys.stdout, 'reconfigure'):
@@ -149,7 +149,7 @@ def run_check(config, dry_run=False):
     print('═' * 60)
 
     # ---- 1. 历史K线 (config data.source) ----
-    from data_sources import get_data_source, data_source_label
+    from quantlab.data_sources import get_data_source, data_source_label
     source_name = config.get('data', {}).get('source', 'quantdash')
     print(f'  数据源: {data_source_label(source_name)}')
     hist = get_data_source(source_name).fetch_watchlist_data(
@@ -278,7 +278,7 @@ def push_feishu(webhook, text):
 
 
 def main():
-    from main import load_config
+    from quantlab.cli.main import load_config
     wait = '--wait' in sys.argv
     dry_run = '--dry-run' in sys.argv
 

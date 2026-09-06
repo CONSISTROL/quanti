@@ -45,7 +45,7 @@ def _load_history_local(hist_file=''):
 
 
 def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=0.0, strategy_name='gap_open'):
-    from main import load_config
+    from quantlab.cli.main import load_config
     config = config or load_config()
 
     tr_cfg = dict(config['trading'])
@@ -54,7 +54,7 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=
         tr_cfg['buy_next_close'] = True  # 信号次日尾盘(收盘价)买入, 卖出仍按持有到期当日尾盘
     if max_rise > 0:
         tr_cfg['gap_max'] = max_rise  # 排除收盘涨幅>=该阈值的股票 (如0.099=排除涨停收盘, 涨停买不进)
-    from strategies import GapOpenStrategy, GapOpenOpenStrategy, strategy_label
+    from quantlab.strategies import GapOpenStrategy, GapOpenOpenStrategy, strategy_label
     strat_cls = GapOpenOpenStrategy if strategy_name == 'gap_open_open' else GapOpenStrategy
     tr_cfg.update(strat_cls.recommended)
     print(f'  策略: {strategy_label(strategy_name)}')
@@ -65,7 +65,7 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=
     if hist is None:
         print('  (无本地历史缓存, 走 fetch_all_data 全市场抓取)')
         dt_cfg = config.get('data', {})
-        from data_fetcher import fetch_all_data
+        from quantlab.data_fetcher import fetch_all_data
         class Args:
             pass
         args = Args()
@@ -97,8 +97,8 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=
         print(f'  (快速验证: 只回测最近 {min(days, len(tds))} 个交易日)')
 
     # ---- 3. 指标预计算 (仅候选池) ----
-    from data_fetcher import _code_pure
-    from indicator_cache import precompute_all_indicators
+    from quantlab.data_fetcher import _code_pure
+    from quantlab.indicator_cache import precompute_all_indicators
     if limit:
         # 截断 hist: 引擎候选池从 history_dict 构建, 限制扫描范围 (调试用)
         sub = {}
@@ -130,7 +130,7 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=
         print('  ⚡ 跳过指标预计算 (信号向量化预筛)')
     elif limit:
         # 调试模式: 直接计算子集指标 (不读写缓存文件, 避免覆盖全市场缓存)
-        from indicator_cache import _incremental_indicators
+        from quantlab.indicator_cache import _incremental_indicators
         target_dates = {pd.Timestamp(d).strftime('%Y-%m-%d') for d in trading_dates}
         precomputed = {}
         for code, sina in cand_map.items():
@@ -161,7 +161,7 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=
             spot_df = None
     name_df = None
     if spot_df is not None and '代码' in spot_df.columns and '名称' in spot_df.columns:
-        from data_fetcher import _code_pure
+        from quantlab.data_fetcher import _code_pure
         rows = []
         for _, r in spot_df.iterrows():
             try:
@@ -172,7 +172,7 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=
             name_df = pd.DataFrame(rows)
             print(f'  (股票名称: 取自 {os.path.basename(spot_files[-1])} 共 {len(rows)} 只)')
 
-    from trading_engine import run_swing_backtest, print_trade_summary
+    from quantlab.trading_engine import run_swing_backtest, print_trade_summary
     result = run_swing_backtest(
         hist, name_df, tr_cfg,
         start_date_str=start, end_date_str=end,
@@ -198,7 +198,7 @@ def main(config=None, days=0, limit=0, hist_file='', next_close=False, max_rise=
     print_trade_summary(result)
 
     # ---- 5. HTML报告 (两份: 信号口径 + 用户操作执行口径) ----
-    from report_generator import generate_html_report
+    from quantlab.reports.generator import generate_html_report
     from datetime import datetime
     stamp = datetime.now().strftime('%Y%m%d')
     for scope, tag, label in (('signal', 'signal', '信号口径'),

@@ -1,0 +1,317 @@
+﻿"""FastAPI application for the Quanti Web Console.
+
+Run from repository root:
+    uvicorn backend.app:app --host 0.0.0.0 --port 8000
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+ROOT = Path(__file__).resolve().parent.parent
+CONFIG_PATH = ROOT / "config.json"
+FRONTEND_DIST = ROOT / "frontend" / "dist"
+REPORT_RE = re.compile(r"^report_.+\.(html?|txt|json)$")
+REPORTS_DIR = ROOT / "reports"
+
+from backend import runners  # noqa: E402
+from backend.jobs import JobManager  # noqa: E402
+
+app = FastAPI(title="Quanti Web Console", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+job_manager = JobManager()
+
+
+def _load_config() -> dict:
+    if not CONFIG_PATH.exists():
+        raise HTTPException(status_code=400, detail="config.json 不存在，请先创建")
+    try:
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取 config.json 失败: {e}")
+
+
+class ConfigUpdate(BaseModel):
+    config: dict
+
+
+class JobCreate(BaseModel):
+    kind: str  # watchlist | stock | test
+    module: Optional[str] = None
+    stock: Optional[str] = None
+    strategy: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    watchlist: Optional[list[str]] = None
+    top: Optional[int] = None
+
+
+class PortfolioOptimizeRequest(BaseModel):
+    watchlist: Optional[list[str]] = None
+    gamma: float = 2.0
+    periods: int = 252
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "time": datetime.now().isoformat(timespec="seconds")}
+
+
+@app.get("/api/stock-name/{code}")
+def stock_name(code: str):
+    try:
+        from backend.stock_name import get_stock_name
+        return get_stock_name(code)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/portfolio-optimize")
+def portfolio_optimize(body: PortfolioOptimizeRequest):
+    try:
+        from backend.portfolio_optimizer import run_portfolio_optimization
+        config = _load_config()
+        params = {
+            "watchlist": body.watchlist,
+            "gamma": body.gamma,
+            "periods": body.periods,
+        }
+        return run_portfolio_optimization(config, params)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/config")
+def get_config():
+    return _load_config()
+
+
+@app.put("/api/config")
+def put_config(body: ConfigUpdate):
+    cfg = body.config
+    # Light validation: must be object and contain expected top-level keys? Keep lenient.
+    if not isinstance(cfg, dict):
+        raise HTTPException(status_code=400, detail="配置必须是 JSON 对象")
+    try:
+        CONFIG_PATH.write_text(
+            json.dumps(cfg, ensure_ascii=False, indent=4),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"写入 config.json 失败: {e}")
+    return {"ok": True, "config": cfg}
+
+
+@app.get("/api/meta")
+def meta():
+    cfg = _load_config()
+    trading = cfg.get("trading", {})
+    data = cfg.get("data", {})
+    reports = list_reports()
+    return {
+        "strategy": trading.get("strategy", ""),
+        "watchlist": cfg.get("watchlist", []),
+        "source": data.get("source", ""),
+        "start_date": cfg.get("backtest", {}).get("start_date", ""),
+        "report_count": len(reports),
+        "latest_report": reports[0] if reports else None,
+        "tests": runners.list_test_modules(),
+        "strategies": [
+            {"name": name, "label": getattr(cls, "label", name)}
+            for name, cls in _strategies().items()
+        ],
+        "backtest_strategies": [
+            {"name": name, "label": info.get("label", name), "description": info.get("desc", "")}
+            for name, info in _backtest_strategies().items()
+        ],
+        "data_sources": [
+            {"name": name, "label": getattr(cls, "label", name)}
+            for name, cls in _data_sources().items()
+        ],
+    }
+
+
+def _strategies():
+    from quantlab.strategies import STRATEGIES
+    return STRATEGIES
+
+
+def _backtest_strategies():
+    from quantlab.backtest import STRATEGIES
+    return STRATEGIES
+
+
+def _data_sources():
+    from quantlab.data_sources import DATA_SOURCES
+    return DATA_SOURCES
+
+
+@app.get("/api/kline/{code}")
+def kline(code: str, strategy: Optional[str] = None, max_bars: int = Query(500, ge=100, le=5000),
+          interval: str = Query("1d", pattern="^(1d|1w|1M|5m|15m|30m|60m)$"),
+          refresh: bool = False):
+    try:
+        from backend.kline import get_kline_data
+        return get_kline_data(code, strategy=strategy, max_bars=max_bars,
+                              interval=interval, refresh=refresh)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/tests")
+def tests():
+    return runners.list_test_modules()
+
+
+@app.get("/api/strategies")
+def strategies():
+    return [
+        {"name": name, "label": getattr(cls, "label", name)}
+        for name, cls in _strategies().items()
+    ]
+
+
+@app.get("/api/data-sources")
+def data_sources():
+    return [
+        {"name": name, "label": getattr(cls, "label", name)}
+        for name, cls in _data_sources().items()
+    ]
+
+
+def list_reports():
+    items = []
+    if not REPORTS_DIR.is_dir():
+        return []
+    for p in REPORTS_DIR.glob("report_*"):
+        if not p.is_file():
+            continue
+        if not REPORT_RE.match(p.name):
+            continue
+        stat = p.stat()
+        items.append({
+            "name": p.name,
+            "path": p.name,
+            "size": stat.st_size,
+            "mtime": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "url": f"/api/reports/{p.name}",
+        })
+    items.sort(key=lambda x: x["name"], reverse=True)
+    return items
+
+
+@app.get("/api/reports")
+def reports():
+    return list_reports()
+
+
+@app.get("/api/reports/{filename}")
+def get_report(filename: str):
+    if not REPORT_RE.match(filename) or ".." in filename:
+        raise HTTPException(status_code=400, detail="非法文件名")
+    path = REPORTS_DIR / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="报告不存在")
+    return FileResponse(path)
+
+
+@app.delete("/api/reports/{filename}")
+def delete_report(filename: str):
+    if not REPORT_RE.match(filename) or ".." in filename:
+        raise HTTPException(status_code=400, detail="非法文件名")
+    path = REPORTS_DIR / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="报告不存在")
+    try:
+        path.unlink()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"删除失败: {e}")
+    return {"ok": True}
+
+
+@app.post("/api/jobs")
+def create_job(body: JobCreate):
+    kind = body.kind
+    if kind not in ("watchlist", "stock", "test", "selection"):
+        raise HTTPException(status_code=400, detail="kind 必须是 watchlist/stock/test/selection")
+    params = body.model_dump(exclude_none=True)
+    params.pop("kind", None)
+    try:
+        job = job_manager.submit(kind, params)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return job_manager._public(job)
+
+
+@app.get("/api/jobs")
+def jobs():
+    return job_manager.list_jobs()
+
+
+@app.get("/api/jobs/{job_id}")
+def job_detail(job_id: str):
+    job = job_manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return job_manager._public(job)
+
+
+@app.get("/api/jobs/{job_id}/logs")
+def job_logs(job_id: str, after: int = Query(0, ge=0)):
+    job = job_manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return job.logs(after)
+
+
+@app.get("/api/jobs/{job_id}/result")
+def job_result(job_id: str):
+    job = job_manager.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if job.status != "success":
+        raise HTTPException(status_code=409, detail=f"任务未完成，当前状态: {job.status}")
+    return job.result
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    ok = job_manager.cancel(job_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="任务不存在或已结束")
+    return {"ok": True}
+
+
+# Serve built Vue frontend if available.
+if FRONTEND_DIST.is_dir():
+    assets = FRONTEND_DIST / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa(full_path: str):
+        # API 404s should still be JSON, not fallback to index.
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="接口不存在")
+        candidate = (FRONTEND_DIST / full_path).resolve()
+        if full_path and candidate.is_file() and candidate.is_relative_to(FRONTEND_DIST.resolve()):
+            return FileResponse(candidate)
+        return FileResponse(FRONTEND_DIST / "index.html")

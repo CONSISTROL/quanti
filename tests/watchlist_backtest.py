@@ -1,4 +1,4 @@
-"""
+﻿"""
 自选池轮动回测 — config.json watchlist 指定的自选股 (可含ETF/LOF)
 策略: watchlist (强弱评分+单持仓满仓+卖弱买强)
 
@@ -23,7 +23,7 @@ WATCH_NAMES = {
 
 
 def main(config=None):
-    from main import load_config
+    from quantlab.cli.main import load_config
     config = config or load_config()
 
     watchlist = [str(c).zfill(6) for c in config.get('watchlist', [])]
@@ -33,7 +33,7 @@ def main(config=None):
 
     # ---- 1. 加载数据: 按 config data.source 选择数据源 ----
     data_cfg = config.get('data', {})
-    from data_sources import get_data_source, data_source_label
+    from quantlab.data_sources import get_data_source, data_source_label
     source_name = data_cfg.get('source', 'quantdash')
     ds = get_data_source(source_name)
     print(f'  数据源: {data_source_label(source_name)}')
@@ -45,9 +45,9 @@ def main(config=None):
         return 1
 
     # ---- 2. 预计算指标 (仅自选池) ----
-    from data_fetcher import _code_pure
-    from indicator_cache import _incremental_indicators
-    from strategies import strategy_label
+    from quantlab.data_fetcher import _code_pure
+    from quantlab.indicator_cache import _incremental_indicators
+    from quantlab.strategies import strategy_label
 
     precomputed = {}
     names = {}
@@ -95,7 +95,7 @@ def main(config=None):
     tr_cfg['position_pct'] = 1.0
     tr_cfg['kelly_mode'] = False
 
-    from trading_engine import run_swing_backtest, print_trade_summary
+    from quantlab.trading_engine import run_swing_backtest, print_trade_summary
     start = config.get('backtest', {}).get('start_date', '2025-01-01')
     end = config.get('backtest', {}).get('end_date', '') or ''  # 空 = 自动用数据最新交易日
 
@@ -147,11 +147,11 @@ def main(config=None):
 
         # ---- 5.5 次日卖出触发价 (当前持仓, 真实场景次日早盘操作) ----
         final_positions = result.get('final_positions', [])
-        from data_fetcher import _code_pure
+        from quantlab.data_fetcher import _code_pure
         sina_map = {_code_pure(k): k for k in hist}
         if final_positions:
-            from sell_price_forecast import next_sell_prices
-            from strategies import get_strategy
+            from quantlab.sell_price_forecast import next_sell_prices
+            from quantlab.strategies import get_strategy
             strat = get_strategy(config.get('trading', {}).get('strategy', 'watchlist'))
             print('\n' + '═' * 90)
             print('  📉 次日卖出触发价 (今日收盘后评估, 明日收盘价达到即触发卖出)')
@@ -160,7 +160,7 @@ def main(config=None):
                 sina = sina_map.get(pos.code)
                 if not sina:
                     continue
-                from trading_engine import fmt_px
+                from quantlab.trading_engine import fmt_px
                 fp = next_sell_prices(hist[sina], pos.entry_price, strat)
                 pnl = (fp['现价'] / pos.entry_price - 1) if pos.entry_price > 0 else 0
                 print(f"\n  {pos.code} {names.get(pos.code, '')}  成本 {fmt_px(pos.entry_price)}  "
@@ -186,9 +186,9 @@ def main(config=None):
             print('\n  当前无持仓 (空仓等待买入信号, 无卖出触发价)')
 
         # ---- 5.6 次日操作计划 (提前一天: 卖出/切标) ----
-        from strategies import get_strategy
+        from quantlab.strategies import get_strategy
         strat = get_strategy(config.get('trading', {}).get('strategy', 'watchlist'))
-        from trading_engine import Position
+        from quantlab.trading_engine import Position
         # 持仓来源: config trading.positions 指定真实持仓优先, 否则用回测最终持仓
         pos_cfg = config.get('trading', {}).get('positions', [])
         plan_positions = result.get('final_positions', [])
@@ -202,7 +202,7 @@ def main(config=None):
                     cc, names.get(cc, ''), float(pc.get('entry', 0)),
                     pd.Timestamp(last_td), 0, 0, 'manual'))
             plan_source = 'config trading.positions 真实持仓'
-        from daily_plan import build_nextday_plan, print_nextday_plan
+        from quantlab.daily_plan import build_nextday_plan, print_nextday_plan
         plan = build_nextday_plan(hist, precomputed, names, config, strat, scored_df, plan_positions)
         print(f'\n  (持仓来源: {plan_source})')
         print_nextday_plan(plan)
@@ -210,7 +210,7 @@ def main(config=None):
         # ---- 6. ECharts可视化报告 (净值对比+收益柱状+K线含买卖点) ----
         sina_map = {_code_pure(k): k for k in hist}
         try:
-            from report_echarts import generate_echarts_report
+            from quantlab.reports.echarts import generate_echarts_report
             from datetime import datetime
             combo = {
                 'eq': result.get('equity_curve', []),
@@ -232,7 +232,7 @@ def main(config=None):
                     'precomputed': precomputed,
                 }
             echarts_path = f'report_watchlist_echarts_{datetime.now().strftime("%Y%m%d")}.html'
-            generate_echarts_report(combo, per, echarts_path)
+            echarts_path = generate_echarts_report(combo, per, echarts_path) or echarts_path
             print(f'\n  ✅ ECharts报告: {os.path.abspath(echarts_path)}')
         except Exception as e:
             import traceback
@@ -240,7 +240,7 @@ def main(config=None):
             traceback.print_exc()
 
         # 生成HTML报告 (系统买卖信号记录 = 信号口径: 信号日/信号价/信号盈亏 + 信号账户总收益率)
-        from report_generator import generate_html_report
+        from quantlab.reports.generator import generate_html_report
         from datetime import datetime
         output_path = f'report_watchlist_{datetime.now().strftime("%Y%m%d")}.html'
         try:
