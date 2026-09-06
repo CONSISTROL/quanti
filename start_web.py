@@ -61,6 +61,20 @@ def ensure_venv(force_install: bool = False) -> bool:
         run([str(py), "-m", "pip", "install", "-r", str(ROOT / "requirements-web.txt")])
         run([str(py), "-m", "pip", "install", "-r", str(ROOT / "requirements-opt.txt")])
         return True
+
+    # .venv 已存在时不能直接跳过：检查 Web 后端关键依赖是否齐全，
+    # 避免用户之前手动建过 .venv 但没装 requirements-web.txt 导致缺少 uvicorn/fastapi。
+    check = subprocess.run(
+        [str(py), "-c", "import fastapi, uvicorn, pandas, numpy"],
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode != 0:
+        print("[2/4] Existing .venv is missing web dependencies, installing ...")
+        run([str(py), "-m", "pip", "install", "-r", str(ROOT / "requirements.txt")])
+        run([str(py), "-m", "pip", "install", "-r", str(ROOT / "requirements-web.txt")])
+        run([str(py), "-m", "pip", "install", "-r", str(ROOT / "requirements-opt.txt")])
+        return True
     return False
 
 

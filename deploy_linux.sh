@@ -86,8 +86,15 @@ if [[ "$MODE" == "stop" ]]; then
 fi
 
 # ---------------------------------------------------------------- 1. Python 环境
+# 不能只凭 .venv/.quanti_installed 判断，还要实际验证 web 关键依赖存在，
+# 避免用户之前手动建过 .venv 但没装 requirements-web.txt（缺少 uvicorn/fastapi）。
+PY_DEPS_OK=0
+if "$PY" -c "import fastapi, uvicorn, pandas, numpy" >/dev/null 2>&1; then
+    PY_DEPS_OK=1
+fi
+
 NEED_SETUP=0
-if [[ ! -x "$PY" || ! -f "$MARKER" || "$FORCE_SETUP" == "1" ]]; then
+if [[ ! -x "$PY" || ! -f "$MARKER" || "$FORCE_SETUP" == "1" || "$PY_DEPS_OK" != "1" ]]; then
     NEED_SETUP=1
 fi
 
@@ -132,7 +139,8 @@ if [[ "$MODE" == "systemd" ]]; then
         exit 1
     fi
     SERVICE_FILE="/etc/systemd/system/quanti-web.service"
-    echo "[3/4] 写入 systemd 服务: $SERVICE_FILE"
+    RUN_USER="${SUDO_USER:-$(id -un)}"
+    echo "[3/4] 写入 systemd 服务: $SERVICE_FILE (运行用户: $RUN_USER)"
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Quanti Web Console
@@ -140,7 +148,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=$RUN_USER
 WorkingDirectory=$ROOT
 ExecStart=$PY start_web.py --host $HOST --port $PORT --skip-deps --skip-build
 Restart=always
