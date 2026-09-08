@@ -281,6 +281,7 @@ def intraday_t_decision(code: str, max_days: int = 30) -> dict:
 
 
 
+    days_available = len(results)
     results = results[-max_days:]
 
     completed = [r for r in results if r["pnl"] is not None]
@@ -346,6 +347,22 @@ def intraday_t_decision(code: str, max_days: int = 30) -> dict:
         "stats": stats,
 
         "recent": results[-10:][::-1],
+
+        "limit": {
+
+            "requested_days": int(max_days),
+
+            "days_available": int(days_available),
+
+            "bars_1m": int(len(minute)),
+
+            "bars_per_day_approx": 240,
+
+            "note": "1分钟K线来自腾讯接口, 单次仅返回最近约320根(≈1.3~2个交易日); "
+
+                    "请求天数超过数据覆盖时统计天数会自动少于请求值",
+
+        },
 
     }
 

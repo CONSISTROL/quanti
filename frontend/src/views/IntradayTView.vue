@@ -8,8 +8,9 @@
       <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center">
         <el-input v-model="code" placeholder="6位代码" maxlength="6" clearable style="width: 150px" @keyup.enter="run" />
         <div>
-          <div class="muted">统计最近天数</div>
-          <el-input-number v-model="maxDays" :min="5" :max="120" :step="5" style="width: 130px" />
+          <div class="muted">统计最近交易日（1分钟K线，约240根/天）</div>
+          <el-input-number v-model="maxDays" :min="1" :max="120" :step="1" style="width: 130px" />
+          <div class="muted" style="margin-top: 4px; max-width: 300px; line-height: 1.4">腾讯1分钟接口单次约回320根（≈1.3~2个交易日），请求天数大于可用数据时会按实际天数统计</div>
         </div>
         <el-button type="primary" :loading="running" @click="run">
           <el-icon style="margin-right: 4px"><DataAnalysis /></el-icon>
@@ -18,6 +19,9 @@
       </div>
 
       <el-alert v-if="error" :title="error" type="error" show-icon :closable="true" style="margin-top: 12px" @close="error=''" />
+      <el-alert v-if="result?.limit && result.limit.days_available < result.limit.requested_days"
+        :title="`实际覆盖 ${result.limit.days_available} 个交易日（1分钟K线 ${result.limit.bars_1m} 根）；请求最近 ${result.limit.requested_days} 天。${result.limit.note}`"
+        type="info" show-icon :closable="false" style="margin-top: 12px" />
     </el-card>
 
     <el-card v-if="running" shadow="never" style="margin-top: 16px">

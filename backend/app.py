@@ -130,7 +130,7 @@ def intraday_monitor_stop():
 
 
 @app.get("/api/intraday-t/{code}")
-def intraday_t(code: str, max_days: int = Query(30, ge=5, le=120)):
+def intraday_t(code: str, max_days: int = Query(30, ge=1, le=120)):
     try:
         from backend.intraday_t_decision import intraday_t_decision
         return intraday_t_decision(code, max_days=max_days)
