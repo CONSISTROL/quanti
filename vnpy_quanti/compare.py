@@ -26,19 +26,42 @@ def fmt_stat(v, pct=False):
 
 
 def compare(new: dict, legacy: dict) -> int:
+    codeful = False
+    if new.get("decisions") and legacy.get("trades"):
+        codeful = ("code" in new["decisions"][0]) and ("code" in legacy["trades"][0])
+
     print("=" * 72)
-    print("G2 — 信号（决策日 × 方向）逐条对比")
+    if codeful:
+        print("G2 — 信号（决策日 × 标的 × 方向）逐条对比")
+    else:
+        print("G2 — 信号（决策日 × 方向）逐条对比")
     print("=" * 72)
 
     nm = new["meta"]
     lm = legacy["meta"]
-    print(f"  vnpy  : {nm['code']} {nm['strategy']} rows={nm['history_rows']} "
+    fmt_code = (" code=" + str(nm.get("code", ""))) if not codeful else ""
+    print(f"  vnpy  : {nm.get('code', '')}{fmt_code} {nm['strategy']} "
           f"决策={len(new['decisions'])}")
-    print(f"  legacy: {lm['code']} {lm['strategy']} rows={lm['history_rows']} "
+    print(f"  legacy: {lm.get('code', '')} {lm['strategy']} "
           f"成交={len(legacy['trades'])} (immediate: 成交日==信号日)")
 
-    leg = {(t["signal_date"], t["direction"]) for t in legacy["trades"]}
-    dec = {(d["date"], d["direction"]) for d in new["decisions"]}
+    def _key3(t):
+        return (str(t.get("code", "")), t["signal_date"], t["direction"])
+
+    def _key2(t):
+        return (t["signal_date"], t["direction"])
+
+    def _dk3(d):
+        return (str(d.get("code", "")), d["date"], d["direction"])
+
+    def _dk2(d):
+        return (d["date"], d["direction"])
+
+    key_l = _key3 if codeful else _key2
+    key_d = _dk3 if codeful else _dk2
+
+    leg = {key_l(t) for t in legacy["trades"]}
+    dec = {key_d(d) for d in new["decisions"]}
 
     only_legacy = sorted(leg - dec)
     only_new = sorted(dec - leg)
@@ -48,14 +71,21 @@ def compare(new: dict, legacy: dict) -> int:
     exit_code = 0
     if only_legacy or only_new:
         exit_code = 1
+        reasons_map = {}
+        for t in legacy["trades"]:
+            reasons_map.setdefault(key_l(t), []).append(t["reason"])
         for d in only_legacy:
-            reasons = [t["reason"] for t in legacy["trades"]
-                       if (t["signal_date"], t["direction"]) == d]
-            print(f"  ✗ 仅legacy {d[0]} {d[1]:<4} {reasons[:1]}")
-        new_reason = {dd["date"]: dd for dd in new["decisions"]}
+            cd = f"{d[0]} " if codeful else ""
+            lbl = d[2] if codeful else d[1]
+            print(f"  ✗ 仅legacy {cd}{lbl:<4} {str(reasons_map.get(d, ['']))[:60]}")
+        new_reason = {}
+        for dd in new["decisions"]:
+            new_reason[key_d(dd)] = dd
         for d in only_new:
-            r = new_reason.get(d[0], {})
-            print(f"  ✗ 仅vnpy  {d[0]} {d[1]:<4} {str(r.get('reason'))[:60]}")
+            r = new_reason.get(d, {})
+            cd = f"{d[0]} " if codeful else ""
+            lbl = d[2] if codeful else d[1]
+            print(f"  ✗ 仅vnpy  {cd}{lbl:<4} {str(r.get('reason'))[:60]}")
 
     # 方向一致率（按 legacy 信号为基准）
     if leg:

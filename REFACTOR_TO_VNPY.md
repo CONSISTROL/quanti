@@ -270,6 +270,25 @@ python -m vnpy_quanti compare --new out.json --legacy ref.json
 
 → 全部单标的 swing 策略 G2 信号 100% 一致，fill=close 下 G3 绩效与 legacy 逐分一致（费率 0）。
 
-### ⏭ 下一步（P4）
-- 组合语义（自选轮动 watchlist 资金池/优先级/双口径）评估 `vnpy_portfoliostrategy` 或自研多标的运行器。
-- 旧系统 `quantlab/*`、`tests/*`、Web 控制台保持零改动。
+### ✅ P4（核心引擎·组合语义）：watchlist 自选轮动迁移 + 验证
+- 新增 `vnpy_quanti/portfolio.py` `PortfolioEngine`：多标的一账户组合回测引擎，镜像旧引擎
+  `run_swing_backtest` immediate（信号日收盘成交）决策流——逐 union 交易日：卖出判定（最大持有/
+  rebound 规则/sell_signal，收盘卖出+当日禁买该 code）→ 买入判定（slots & cash>5% 门槛、
+  加分后 score≥min_buy_score 选股、按分稳定排序取前 slots、龙头TOP10/自选优先级加分、
+  full_position 或按分缩放仓位、整手）→ 收盘估值净值。数据/指标/判定逻辑与旧系统单源。
+- 验证（`tests/{run_p4_vnpy,gen_legacy_p4_ref}.py` + 共享用例 `tests/p4_cases.json`，
+  标的 = config watchlist 5 只，2025-01-01 ~ 数据最新；产物 `reports/vnpy_compare/p4_*.json`）：
+
+| 用例 | G2 命中 | vnpy 最终净值 | legacy 最终净值 | 总收益率(均同) |
+|---|---|---|---|---|
+| A 单仓满仓(max1/pct1/full) | 65/65 ✅ | 378,642.48 | 378,642.48 | +152.43% |
+| B 双仓各半(max2/pct0.5) | 106/106 ✅ | 262,362.99 | 262,362.99 | +31.18% |
+
+- 修复两处口径：买入回退需 ≥60 根（旧引擎阈值，卖出为 ≥20）；588170 次新 ETF 在
+  `_incremental_indicators` n<120 前只能走回退路径——初版用错卖出阈值导致提前买入。
+- 组合语义现状边界（后续可扩展）：immediate 单账户口径；exec 延迟/双口径净值、watchlist_weekly
+  （reduce_signal 高位减仓 + add_position_signal 低位加仓）为后续项。
+
+### ⏭ 下一步（P4 收尾 / P5）
+- watchlist_weekly 组合（减仓/加仓）、exec_next_* 与双口径净值、全市场扫描多标的回归。
+- 参数优化接入 vnpy `OptimizationSetting`；CLI/README 收尾；旧系统保持零改动。

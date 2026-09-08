@@ -1,0 +1,36 @@
+{
+  "_comment": "P4 组合引擎对比用例: vnpy_quanti PortfolioEngine vs legacy run_swing_backtest (immediate/收盘成交)。codes 顺序即扫描/并列平手顺序, 两引擎必须一致。",
+  "watchlist_pkl": "cache/quantdash_watchlist_20260908.pkl",
+  "cases": [
+    {
+      "name": "A_single_full",
+      "strategy": "watchlist",
+      "codes": ["601857", "588170", "600547", "513580", "159941"],
+      "start": "2025-01-01",
+      "end": "",
+      "initial_capital": 150000,
+      "max_positions": 1,
+      "position_pct": 1.0,
+      "full_position": true,
+      "min_buy_score": 4,
+      "max_holding_days": 0,
+      "watchlist_priority": {"159941": 1},
+      "ranks": {}
+    },
+    {
+      "name": "B_two_halves",
+      "strategy": "watchlist",
+      "codes": ["601857", "588170", "600547", "513580", "159941"],
+      "start": "2025-01-01",
+      "end": "",
+      "initial_capital": 200000,
+      "max_positions": 2,
+      "position_pct": 0.5,
+      "full_position": false,
+      "min_buy_score": 4,
+      "max_holding_days": 0,
+      "watchlist_priority": {"159941": 1},
+      "ranks": {}
+    }
+  ]
+}
