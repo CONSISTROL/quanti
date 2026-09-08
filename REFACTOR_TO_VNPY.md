@@ -279,15 +279,19 @@ python -m vnpy_quanti compare --new out.json --legacy ref.json
 - 验证（`tests/{run_p4_vnpy,gen_legacy_p4_ref}.py` + 共享用例 `tests/p4_cases.json`，
   标的 = config watchlist 5 只，2025-01-01 ~ 数据最新；产物 `reports/vnpy_compare/p4_*.json`）：
 
-| 用例 | G2 命中 | vnpy 最终净值 | legacy 最终净值 | 总收益率(均同) |
+| 用例 | 语义 | G2 命中 | 最终净值(两侧同) | 总收益率(均同) |
 |---|---|---|---|---|
-| A 单仓满仓(max1/pct1/full) | 65/65 ✅ | 378,642.48 | 378,642.48 | +152.43% |
-| B 双仓各半(max2/pct0.5) | 106/106 ✅ | 262,362.99 | 262,362.99 | +31.18% |
+| A 单仓满仓 | watchlist max1/pct1/full | 65/65 ✅ | 378,642.48 | +152.43% |
+| B 双仓各半 | watchlist max2/pct0.5 | 106/106 ✅ | 262,362.99 | +31.18% |
+| C 跳空轮动池 | gap_open max5/pct0.2 | 42/42 ✅ | 199,099.92 | −0.45% |
+| D 弱转强池 | reversal max2/pct0.5 | 20/20 ✅ | 242,626.74 | +21.31% |
 
-- 修复两处口径：买入回退需 ≥60 根（旧引擎阈值，卖出为 ≥20）；588170 次新 ETF 在
-  `_incremental_indicators` n<120 前只能走回退路径——初版用错卖出阈值导致提前买入。
-- 组合语义现状边界（后续可扩展）：immediate 单账户口径；exec 延迟/双口径净值、watchlist_weekly
-  （reduce_signal 高位减仓 + add_position_signal 低位加仓）为后续项。
+- 修复两处口径：买入回退需 ≥60 根（旧引擎阈值，卖出为 ≥20）；gap_open/open 策略对次新标的
+  走“轻量回退”(≥2 根, 非 60 根)——否则次新 ETF(588170) 在 `_incremental_indicators`
+  n<120 窗口内买入时机漂移。
+- 组合语义现状边界（后续可扩展）：immediate 单账户口径；exec 延迟/双口径净值、momentum 按
+  scored TOP 名单选池、watchlist_weekly（reduce_signal 高位减仓 + add_position_signal
+  低位加仓）为后续项。
 
 ### ⏭ 下一步（P4 收尾 / P5）
 - watchlist_weekly 组合（减仓/加仓）、exec_next_* 与双口径净值、全市场扫描多标的回归。

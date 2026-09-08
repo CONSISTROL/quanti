@@ -74,7 +74,6 @@ class PortfolioEngine:
         self._pre: dict[str, dict] = {}
         self._window_dates: list = []
         self._close_last: dict[str, list] = {}     # code -> [(date, close)] 升序
-        self._dates_idx: dict[str, list] = {}
 
     # ------------------------------------------------------------------ #
     def load(self, code_dfs: dict[str, Any], start_date: str, end_date: str,
@@ -104,6 +103,29 @@ class PortfolioEngine:
     # ------------------------------------------------------------------ #
     def _ind(self, code: str, dstr: str) -> dict | None:
         return self._pre.get(code, {}).get(dstr)
+
+    def _gap_ind(self, code: str, today) -> dict | None:
+        """旧引擎 gap 策略买入回退: 轻量 ind (>=2根, 无需60根)。
+
+        镜像 run_swing_backtest 对 gap_open/gap_open_open 的特殊回退路径:
+          {'close': 最近收盘, 'prev_close': 前一根收盘, 'open'?, 'vol_ratio'?}
+        """
+        df = self._dfs.get(code)
+        if df is None:
+            return None
+        import numpy as np
+        mask = df["date"] <= _ts(today)
+        if int(mask.sum()) < 2:
+            return None
+        closes = df["close"].values.astype(float)[: mask.sum()]
+        ind = {"close": float(closes[-1]), "prev_close": float(closes[-2])}
+        if "open" in df.columns:
+            ind["open"] = float(df["open"].values.astype(float)[mask.sum() - 1])
+        if self.strategy_name == "gap_open_open" and "volume" in df.columns:
+            vols = df["volume"].values.astype(float)[: mask.sum()]
+            v5 = float(vols[-5:].mean()) if len(vols) >= 5 else float(vols.mean())
+            ind["vol_ratio"] = float(vols[-1] / v5) if v5 > 0 else 1.0
+        return ind
 
     def _fallback_ind(self, code: str, today, min_rows: int = 20) -> dict | None:
         """旧引擎回退: 无预计算时用 compute_indicators 实时算。
@@ -222,7 +244,10 @@ class PortfolioEngine:
                         continue
                     ind = self._ind(code, dstr)
                     if ind is None:
-                        ind = self._fallback_ind(code, day, min_rows=60)   # 买入回退需>=60根 (旧引擎同款)
+                        if self.strategy_name in ("gap_open", "gap_open_open"):
+                            ind = self._gap_ind(code, day)          # gap 轻量回退(>=2根)
+                        else:
+                            ind = self._fallback_ind(code, day, min_rows=60)
                     if ind is None:
                         continue
                     is_buy, score, reason = strat.buy_signal(ind)
