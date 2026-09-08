@@ -285,10 +285,14 @@ python -m vnpy_quanti compare --new out.json --legacy ref.json
 | B 双仓各半 | watchlist max2/pct0.5 | 106/106 ✅ | 262,362.99 | +31.18% |
 | C 跳空轮动池 | gap_open max5/pct0.2 | 42/42 ✅ | 199,099.92 | −0.45% |
 | D 弱转强池 | reversal max2/pct0.5 | 20/20 ✅ | 242,626.74 | +21.31% |
+| E 动量池 | momentum max2/pct0.5 | 120/120 ✅ | 213,436.97 | +6.72% |
+| F 周线自选 | watchlist_weekly max2/pct0.5 | 281 去重对 ✅(含减仓/加仓) | 251,622.11 | +25.81% |
 
-- 修复两处口径：买入回退需 ≥60 根（旧引擎阈值，卖出为 ≥20）；gap_open/open 策略对次新标的
-  走“轻量回退”(≥2 根, 非 60 根)——否则次新 ETF(588170) 在 `_incremental_indicators`
-  n<120 窗口内买入时机漂移。
+- 修复三处口径：买入回退需 ≥60 根（旧引擎阈值，卖出为 ≥20）；gap_open/open 策略对次新标的
+  走“轻量回退”(≥2 根, 非 60 根)；补齐 **reduce_signal 高位减仓**(减50%就地记账、不进
+  sold_today)与 **add_position_signal 低位加仓**(补足到 position_pct×总资产, 摊薄成本, 含
+  旧引擎“无 _last_price 时持仓按候选价估值”的怪癖口径)——否则次新 ETF(588170) 与周线策略
+  (watchlist_weekly) 在 `_incremental_indicators` n<120 窗口/高位减仓场景漂移。
 - 组合语义现状边界（后续可扩展）：immediate 单账户口径；exec 延迟/双口径净值、momentum 按
   scored TOP 名单选池、watchlist_weekly（reduce_signal 高位减仓 + add_position_signal
   低位加仓）为后续项。

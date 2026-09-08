@@ -61,6 +61,36 @@
       "max_holding_days": 0,
       "watchlist_priority": {},
       "ranks": {}
+    },
+    {
+      "name": "E_momentum_pool",
+      "strategy": "momentum",
+      "codes": ["601857", "588170", "600547", "513580", "159941"],
+      "start": "2025-01-01",
+      "end": "",
+      "initial_capital": 200000,
+      "max_positions": 2,
+      "position_pct": 0.5,
+      "full_position": false,
+      "min_buy_score": 4,
+      "max_holding_days": 0,
+      "watchlist_priority": {},
+      "ranks": {}
+    },
+    {
+      "name": "F_wkly_two",
+      "strategy": "watchlist_weekly",
+      "codes": ["601857", "588170", "600547", "513580", "159941"],
+      "start": "2025-01-01",
+      "end": "",
+      "initial_capital": 200000,
+      "max_positions": 2,
+      "position_pct": 0.5,
+      "full_position": false,
+      "min_buy_score": 4,
+      "max_holding_days": 0,
+      "watchlist_priority": {},
+      "ranks": {}
     }
   ]
 }

@@ -162,11 +162,11 @@ class PortfolioEngine:
 
     # ------------------------------------------------------------------ #
     def _sell_position(self, pos: Position, today, dstr: str) -> str | None:
+        """镜像旧引擎当日卖出判定 + 高位减仓(reduce)就地执行。
+        返回“整仓卖出”的理由(若触发), 减仓为副作用(不进 sold_today)。"""
         ind = self._ind(pos.code, dstr)
-        fallback = False
         if ind is None:
             ind = self._fallback_ind(pos.code, today)
-            fallback = True
         if ind is None:
             return None
 
@@ -174,6 +174,7 @@ class PortfolioEngine:
         holding_days = self._holding_days(pos, today)
         pnl = close / pos.entry_price - 1 if pos.entry_price > 0 else 0
         pos.max_profit_seen = max(pos.max_profit_seen, pnl)
+        strat = self._strategy()
 
         reason: str | None = None
         if self.max_holding_days > 0 and holding_days >= self.max_holding_days:
@@ -184,8 +185,30 @@ class PortfolioEngine:
                 reason = f"反弹到期({holding_days}天)"
             elif holding_days >= 2 and ma20 > 0 and close >= ma20:
                 reason = f"反弹到MA20({ma20:.2f})"
+
+        # 高位减仓 (策略可选实现 reduce_signal -> (is_reduce, ratio))
         if reason is None:
-            strat = self._strategy()
+            reduce_fn = getattr(strat, "reduce_signal", None)
+            if reduce_fn:
+                is_reduce, ratio = reduce_fn(ind, pos.entry_price)
+                if is_reduce and 0 < ratio < 1:
+                    reduce_shares = int(pos.shares * ratio / 100) * 100
+                    if 100 <= reduce_shares < pos.shares:
+                        amount = reduce_shares * close
+                        self.cash += amount
+                        pos.shares -= reduce_shares
+                        self.trades.append({"date": dstr, "code": pos.code,
+                                            "direction": "SELL",
+                                            "price": round(close, 4),
+                                            "volume": reduce_shares,
+                                            "amount": round(amount, 2)})
+                        self.events.append({"date": dstr, "code": pos.code,
+                                            "direction": "SELL",
+                                            "price": round(close, 4),
+                                            "volume": reduce_shares,
+                                            "reason": f"高位减仓{ratio:.0%}"})
+
+        if reason is None:
             is_sell, r = strat.sell_signal(ind, pos.entry_price, holding_days,
                                            pos.max_profit_seen)
             if is_sell:
@@ -235,12 +258,16 @@ class PortfolioEngine:
                 sold_today.add(pos.code)
 
             # ---- 2. 买入 ----
+            add_fn = getattr(strat, "add_position_signal", None) or None
             slots = self.max_positions - len(self.positions)
             if slots > 0 and self.cash > self.initial_capital * 0.05:
-                held = {p.code for p in self.positions}
+                held_pos = {p.code: p for p in self.positions}
                 cands = []
                 for code in self.codes:
-                    if code in sold_today or code in held:
+                    if code in sold_today:
+                        continue
+                    # 已持仓代码仅在策略支持 add_position_signal 时进入(低位加仓)
+                    if code in held_pos and add_fn is None:
                         continue
                     ind = self._ind(code, dstr)
                     if ind is None:
@@ -275,6 +302,35 @@ class PortfolioEngine:
                     px = self._close_on(code, day)
                     if px is None or px <= 0:
                         continue
+                    pos = held_pos.get(code)
+                    if pos is not None:
+                        # 低位加仓: 补足到 position_pct * total_assets (旧引擎同款,
+                        # 含其“无 _last_price 时全部持仓按本候选价估值”的怪癖口径)
+                        total_assets = self.cash + sum(
+                            p.shares * px for p in self.positions)
+                        target = self.position_pct * total_assets
+                        cur_value = pos.shares * px
+                        add_alloc = max(0.0, min(self.cash, target - cur_value))
+                        if add_alloc < px * 100:
+                            continue
+                        add_shares = int(add_alloc / px / 100) * 100
+                        if add_shares <= 0:
+                            continue
+                        amount = add_shares * px
+                        old_cost = pos.entry_price * pos.shares
+                        pos.shares += add_shares
+                        pos.entry_price = (old_cost + amount) / pos.shares  # 摊薄
+                        self.cash -= amount
+                        self.trades.append({"date": dstr, "code": code,
+                                            "direction": "BUY", "price": round(px, 4),
+                                            "volume": add_shares,
+                                            "amount": round(amount, 2)})
+                        self.events.append({"date": dstr, "code": code,
+                                            "direction": "BUY", "price": round(px, 4),
+                                            "volume": add_shares,
+                                            "reason": f"低位加仓:{reason}"})
+                        continue
+
                     if self.full_position:
                         alloc = self.cash * self.position_pct
                     else:
