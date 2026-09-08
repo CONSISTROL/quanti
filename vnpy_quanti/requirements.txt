@@ -1,0 +1,7 @@
+# vnpy_quanti 运行环境 (.venv-vnpy) 依赖锁定
+# 安装: py -3.13 -m venv .venv-vnpy
+#       .venv-vnpy\Scripts\python -m pip install --index-url https://pypi.org/simple -r vnpy_quanti/requirements.txt
+vnpy==4.4.0
+vnpy_ctastrategy==1.4.1
+vnpy_ctabacktester==1.3.0
+vnpy_sqlite==1.1.3
