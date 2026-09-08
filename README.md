@@ -1,6 +1,23 @@
-﻿# A股波段交易系统 v4.0
+# A股波段交易系统 v4.0
 
 一键运行的A股波段交易系统。`python main.py` 即可完成：数据采集 → 因子打分 → 回测验证 → 生成报告。所有参数通过 `config.json` 配置。
+
+## 🔀 vnpy 内核重构版（`vnpy_quanti/`，可选新内核）
+
+> 正在把核心交易引擎与策略层迁移到 [vnpy 4.4](https://github.com/vnpy/vnpy.git)（独立 venv `.venv-vnpy`），
+> 与旧系统并存、旧 CLI 零改动可回退。设计文档与验证矩阵见 **[REFACTOR_TO_VNPY.md](REFACTOR_TO_VNPY.md)**。
+
+```bash
+.venv-vnpy\Scripts\python.exe -m pip install -r vnpy_quanti/requirements.txt   # 一次性
+# 单标的回测（vnpy CTA 引擎, 判定复用旧策略）:
+.venv-vnpy\Scripts\python.exe -m vnpy_quanti stock --stock 601857 --strategy reversal \
+    --watchlist-pkl cache\quantdash_watchlist_20260908.pkl --out out.json
+# 与旧引擎同数据对比（G2 信号 / G3 绩效）:
+.venv\Scripts\python.exe vnpy_quanti/tests/gen_legacy_ref.py --stock 601857 --strategy reversal \
+    --watchlist-pkl cache\quantdash_watchlist_20260908.pkl --out ref.json
+.venv-vnpy\Scripts\python.exe -m vnpy_quanti compare --new out.json --legacy ref.json
+# 自选池组合回测（vnpy_quanti PortfolioEngine）: 见 vnpy_quanti/tests/run_p4_vnpy.py + p4_cases.json
+```
 
 ## 快速开始
 
