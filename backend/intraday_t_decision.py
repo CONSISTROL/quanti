@@ -199,7 +199,26 @@ def _simulate_day(closes, volumes, gap_pct):
 
         }
 
-    return None
+    # 无配对: 也返回一行 (mode/跳空/早盘量能), pnl=None 表示当天没有做成T
+    return {
+
+        "mode": mode,
+
+        "gap_pct": float(round(gap_pct, 4)),
+
+        "early_volume_ratio": round(early_ratio, 3),
+
+        "buy_time": None,
+
+        "sell_time": None,
+
+        "buy_price": None,
+
+        "sell_price": None,
+
+        "pnl": None,
+
+    }
 
 
 

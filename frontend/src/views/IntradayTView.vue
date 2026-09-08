@@ -83,7 +83,7 @@
       </el-card>
 
       <el-card shadow="never" style="margin-top: 16px">
-        <template #header><span>近{{ result.stats.days || 0 }}日规则回测统计</span></template>
+        <template #header><span>日内做T规则回测 · 覆盖 {{ result.stats.days || 0 }} 个交易日（1分钟K线）</span></template>
         <el-row :gutter="12">
           <el-col v-for="item in statsItems" :key="item.label" :xs="12" :sm="8" :md="4">
             <div class="mini-stat">
@@ -98,22 +98,34 @@
         <template #header><span>最近交易日做T明细</span></template>
         <el-table :data="result.recent" size="small" style="width: 100%; cursor: pointer" @row-click="openDetail">
           <el-table-column prop="date" label="日期" width="110" />
-          <el-table-column prop="mode" label="模式" width="90" />
+          <el-table-column prop="mode" label="模式" width="90">
+            <template #default="{ row }">{{ row.mode || '无配对' }}</template>
+          </el-table-column>
           <el-table-column label="跳空" width="90" align="right">
             <template #default="{ row }">{{ fmtPct(row.gap_pct) }}</template>
           </el-table-column>
           <el-table-column label="早盘量能" width="100" align="right">
             <template #default="{ row }">{{ (row.early_volume_ratio || 0).toFixed(2) }}x</template>
           </el-table-column>
-          <el-table-column label="买入价" prop="buy_price" width="90" align="right" />
-          <el-table-column label="卖出价" prop="sell_price" width="90" align="right" />
+          <el-table-column label="买入价" width="90" align="right">
+            <template #default="{ row }">{{ row.buy_price ?? '—' }}</template>
+          </el-table-column>
+          <el-table-column label="卖出价" width="90" align="right">
+            <template #default="{ row }">{{ row.sell_price ?? '—' }}</template>
+          </el-table-column>
           <el-table-column label="收益" width="90" align="right">
             <template #default="{ row }">
-              <span :class="(row.pnl || 0) >= 0 ? 'up' : 'down'">{{ fmtPct(row.pnl) }}</span>
+              <span v-if="row.pnl == null">—</span>
+              <span v-else :class="row.pnl >= 0 ? 'up' : 'down'">{{ fmtPct(row.pnl) }}</span>
             </template>
           </el-table-column>
         </el-table>
       </el-card>
+      <el-alert
+        v-if="result && !(result.recent?.length)"
+        title="覆盖范围内没有完整交易日数据：可能处于非交易时段/开盘前、该标的1分钟数据缺失，或数据不足1个交易日（见上方 limit 提示）。"
+        type="info" show-icon :closable="false" style="margin-top: 12px"
+      />
     </template>
 
     <el-dialog v-model="detailVisible" :title="`${code} ${detailDate} 分时图`" width="80%" top="6vh">
@@ -200,7 +212,7 @@ const decision = computed(() => result.value?.decision || {})
 const statsItems = computed(() => {
   const s = result.value?.stats || {}
   return [
-    { label: '统计天数', text: s.days ?? 0 },
+    { label: '覆盖天数', text: s.days ?? 0 },
     { label: '配对完成', text: s.completed ?? 0 },
     { label: '历史胜率', text: fmtPct(s.win_rate), className: (s.win_rate || 0) >= 0.5 ? 'up' : 'down' },
     { label: '平均收益', text: fmtPct(s.avg_pnl), className: (s.avg_pnl || 0) >= 0 ? 'up' : 'down' },
