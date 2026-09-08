@@ -77,6 +77,8 @@ def main() -> int:
             "trades": res["trades"],
             "equity_curve": res["equity_curve"],
             "stats": res["stats"],
+            "signal_equity_curve": res.get("signal_equity_curve") or res["equity_curve"],
+            "signal_stats": res.get("signal_stats") or res["stats"],
         }
         f = out_dir / f"p4_{name}_new.json"
         f.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")

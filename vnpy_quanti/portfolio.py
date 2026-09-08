@@ -18,6 +18,7 @@ import bisect
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from . import indicators
@@ -370,6 +371,7 @@ class PortfolioEngine:
 
         stats = calc_legacy_style_stats(self.curve, self.initial_capital,
                                         len(self._window_dates), self.trades)
+        sig = self.build_signal_account()
         return {
             "meta": {
                 "engine": "vnpy_quanti PortfolioEngine"
@@ -388,6 +390,8 @@ class PortfolioEngine:
             "trades": self.trades,
             "equity_curve": self.curve,
             "stats": stats,
+            "signal_equity_curve": sig["signal_equity_curve"],
+            "signal_stats": sig["signal_stats"],
         }
 
     # ------------------------------------------------------------------ #
@@ -533,6 +537,118 @@ class PortfolioEngine:
         if i >= 0:
             return arr[dates[i]].get("close")
         return None
+
+    # ------------------------------------------------------------------ #
+    # 信号账户 (双口径之二): 同一批信号按信号日/信号价独立资金管理复现
+    # 镜像 legacy run_swing_backtest 尾部 signal_curve/signal_stats 重建逻辑。
+    # ------------------------------------------------------------------ #
+    def build_signal_account(self) -> dict:
+        trades = self.trades
+        if not trades:
+            return {"signal_equity_curve": list(self.curve),
+                    "signal_stats": dict(calc_legacy_style_stats(
+                        self.curve, self.initial_capital,
+                        len(self._window_dates), self.trades))}
+
+        trades_by_day: dict[str, list] = {}
+        for t in trades:
+            sd = t.get("signal_date", t["date"])
+            trades_by_day.setdefault(sd, []).append(t)
+
+        s_cash = float(self.initial_capital)
+        s_held: dict[str, int] = {}
+        s_cost: dict[str, float] = {}          # 累计信号投入金额
+        sig_last_close: dict[str, float] = {}
+        sig_curve: list = []
+        sell_pnls: list[float] = []
+
+        for day in self._window_dates:
+            ds = indicators.dkey(day)
+            day_trades = trades_by_day.get(ds, [])
+            # 先卖 (信号账户: 每笔 SELL 视作清仓该 code)
+            for t in day_trades:
+                if t["direction"] != "SELL":
+                    continue
+                code = t["code"]
+                sig_px = float(t.get("signal_price", t.get("price", 0)))
+                held = s_held.get(code, 0)
+                if held > 0:
+                    avg = s_cost.get(code, 0) / held
+                    if avg > 0 and sig_px > 0:
+                        sell_pnls.append(sig_px / avg - 1)
+                s_cash += held * sig_px
+                s_held.pop(code, None)
+                s_cost.pop(code, None)
+            # 后买 (同日多笔等分)
+            buys = [t for t in day_trades if t["direction"] == "BUY"]
+            if buys:
+                per_alloc = s_cash / len(buys)
+                for t in buys:
+                    sig_px = float(t.get("signal_price", t.get("price", 0)))
+                    if sig_px <= 0:
+                        continue
+                    shares = int(per_alloc / sig_px / 100) * 100
+                    if shares > 0:
+                        s_cash -= shares * sig_px
+                        s_held[t["code"]] = s_held.get(t["code"], 0) + shares
+                        s_cost[t["code"]] = s_cost.get(t["code"], 0.0) + shares * sig_px
+            # 估值
+            mv = 0.0
+            for code, shares in s_held.items():
+                c = self._close_on(code, day)
+                if c is not None:
+                    sig_last_close[code] = c
+                mv += shares * sig_last_close.get(code, 0.0)
+            sig_curve.append([ds, round(s_cash + mv, 2)])
+
+        # signal_stats (legacy 同公式)
+        sig_stats = calc_signal_stats(sig_curve, self.initial_capital,
+                                      len(self._window_dates), sell_pnls)
+        return {"signal_equity_curve": sig_curve, "signal_stats": sig_stats}
+
+
+def calc_signal_stats(curve, capital, trading_days, sell_pnls) -> dict:
+    """legacy 信号账户统计公式 (见 trading_engine 1166-1220)。"""
+    values = [float(v) for _, v in curve]
+    if not values:
+        return {}
+    final_value = values[-1]
+    total_return = final_value / capital - 1
+    annual_return = (1 + total_return) ** (252 / max(trading_days, 1)) - 1
+    wins = [p for p in sell_pnls if p > 0]
+    losses = [p for p in sell_pnls if p <= 0]
+
+    rets = []
+    for i in range(1, len(values)):
+        prev = values[i - 1]
+        if prev > 0:
+            rets.append(values[i] / prev - 1)
+    sharpe = (float(np.mean(rets)) / float(np.std(rets)) * np.sqrt(252)
+              if rets and np.std(rets) > 0 else 0)
+
+    peaks = np.maximum.accumulate(values)
+    drawdowns = (peaks - values) / peaks
+    max_dd = float(np.max(drawdowns)) if len(drawdowns) else 0
+    max_dd_days, pk_idx = 0, 0
+    for i in range(1, len(values)):
+        if values[i] >= values[pk_idx]:
+            pk_idx = i
+        elif i - pk_idx > max_dd_days:
+            max_dd_days = i - pk_idx
+
+    return {
+        "initial_capital": capital, "final_value": round(final_value, 2),
+        "total_return": float(total_return), "annual_return": float(annual_return),
+        "sharpe": float(sharpe), "max_drawdown": float(max_dd),
+        "max_drawdown_days": max_dd_days,
+        "total_trades": len(sell_pnls),
+        "win_rate": float(len(wins) / len(sell_pnls)) if sell_pnls else 0,
+        "avg_win": float(np.mean(wins)) if wins else 0,
+        "avg_loss": float(np.mean(losses)) if losses else 0,
+        "profit_loss_ratio": abs(float(np.mean(wins) / np.mean(losses)))
+        if wins and losses and np.mean(losses) != 0 else 0,
+        "trading_days": trading_days,
+    }
 
 
 # --------------------------------------------------------------------- #

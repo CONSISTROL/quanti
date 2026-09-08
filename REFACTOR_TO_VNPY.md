@@ -292,6 +292,9 @@ python -m vnpy_quanti compare --new out.json --legacy ref.json
 
 - PortfolioEngine 现同时支持 **immediate**（信号日收盘成交）与 **exec**（T 日信号 → T+1
   开盘/收盘成交，含 buy_next_open/close 独立延迟）两套成交口径，先卖后买、执行日禁买与旧引擎 0b 步一致。
+- 输出双口径：`equity_curve/stats`（执行账户）+ `signal_equity_curve/signal_stats`
+  （信号账户虚拟账本，信号日/信号价重建，与 legacy 报告口径一致；虚拟账本存在 ≤0.02%
+  的四舍五入/顺序容忍差，执行账户为逐分精确）。
 
 - 修复三处口径：买入回退需 ≥60 根（旧引擎阈值，卖出为 ≥20）；gap_open/open 策略对次新标的
   走“轻量回退”(≥2 根, 非 60 根)；补齐 **reduce_signal 高位减仓**(减50%就地记账、不进

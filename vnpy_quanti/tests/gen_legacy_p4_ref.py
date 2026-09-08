@@ -147,8 +147,12 @@ def main() -> int:
             } for t in result["trades"]],
             "equity_curve": [[_d(d), round(float(v), 2)]
                              for d, v in result["equity_curve"]],
+            "signal_equity_curve": [[_d(d), round(float(v), 2)]
+                                    for d, v in result["signal_equity_curve"]],
             "stats": {k: (round(float(v), 8) if isinstance(v, (int, float)) else v)
                       for k, v in result["stats"].items()},
+            "signal_stats": {k: (round(float(v), 8) if isinstance(v, (int, float)) else v)
+                             for k, v in result["signal_stats"].items()},
         }
         f = out_dir / f"p4_{name}_ref.json"
         f.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")

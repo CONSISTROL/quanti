@@ -129,6 +129,24 @@ def compare(new: dict, legacy: dict) -> int:
             print(f"  {label:<10}  vnpy {fmt_stat(a):>12}  legacy {fmt_stat(b):>12}")
 
     print()
+    if "signal_stats" in new and "signal_stats" in legacy:
+        print("= " * 36)
+        print("信号账户(信号日/信号价口径) 对比")
+        print("= " * 36)
+        sns, sls = new["signal_stats"], legacy["signal_stats"]
+        for label, key, kind in [("最终净值", "final_value", None),
+                                 ("总收益率", "total_return", "pct"),
+                                 ("Sharpe", "sharpe", None),
+                                 ("最大回撤", "max_drawdown", "pct"),
+                                 ("卖出笔数", "total_trades", None),
+                                 ("胜率", "win_rate", "pct")]:
+            a, b = sns.get(key), sls.get(key)
+            if kind == "pct":
+                print(f"  {label:<8}  vnpy {fmt_stat(a, True):>12}  "
+                      f"legacy {fmt_stat(b, True):>12}")
+            else:
+                print(f"  {label:<8}  vnpy {fmt_stat(a):>12}  legacy {fmt_stat(b):>12}")
+        print()
     print("=" * 72)
     print("G2 结果:", "PASS ✅" if exit_code == 0 else "FAIL ❌ (见上方差异)")
     return exit_code
