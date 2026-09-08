@@ -49,7 +49,9 @@ class PortfolioEngine:
                  max_holding_days: int = 0,
                  watchlist_priority: dict | None = None,
                  ranks: dict | None = None, leader_bonus: float = 2.0,
-                 names: dict | None = None) -> None:
+                 names: dict | None = None,
+                 exec_next_open: bool = False, exec_next_close: bool = False,
+                 buy_next_open: bool = False, buy_next_close: bool = False) -> None:
         self.strategy_name = strategy
         self.initial_capital = float(initial_capital)
         self.max_positions = int(max_positions)
@@ -62,18 +64,30 @@ class PortfolioEngine:
         self.leader_bonus = float(leader_bonus)
         self.names = names or {}
 
+        # exec 成交模式 (旧引擎 exec_next_open/exec_next_close/buy_next_*)
+        self.exec_next_open = bool(exec_next_open)
+        self.exec_next_close = bool(exec_next_close)
+        self.buy_next_open = bool(buy_next_open)
+        self.buy_next_close = bool(buy_next_close)
+        self._sell_q = self.exec_next_open or self.exec_next_close
+        self._buy_q = (self._sell_q or self.buy_next_open or self.buy_next_close)
+        self._exec_q = self._buy_q
+
         # 运行期状态
         self.cash = self.initial_capital
         self.positions: list[Position] = []
         self.events: list[dict] = []
         self.curve: list = []
         self.trades: list[dict] = []
+        self._p_sells: list[dict] = []
+        self._p_buys: list[dict] = []
 
         self.codes: list[str] = []
         self._dfs: dict[str, Any] = {}
         self._pre: dict[str, dict] = {}
         self._window_dates: list = []
         self._close_last: dict[str, list] = {}     # code -> [(date, close)] 升序
+        self._open_last: dict[str, list] = {}      # code -> [(date, open)] 升序
 
     # ------------------------------------------------------------------ #
     def load(self, code_dfs: dict[str, Any], start_date: str, end_date: str,
@@ -88,6 +102,12 @@ class PortfolioEngine:
             arr = sorted((indicators.dkey(d), float(px))
                          for d, px in zip(df["date"].values, df["close"].values))
             self._close_last[c] = arr
+            if "open" in df.columns:
+                arr_o = sorted((indicators.dkey(d), float(px))
+                               for d, px in zip(df["date"].values, df["open"].values))
+            else:
+                arr_o = arr
+            self._open_last[c] = arr_o
         self._window_dates = sorted(window)
         if not self._window_dates:
             raise ValueError("窗口内无交易日")
@@ -230,6 +250,9 @@ class PortfolioEngine:
         from quantlab.strategies.base import BaseStrategy
         strat = self._strategy()
         has_rebound = type(strat).rebound_signal is not BaseStrategy.rebound_signal
+        add_fn = getattr(strat, "add_position_signal", None) or None
+        if self._buy_q and add_fn is not None:
+            raise ValueError("exec(延迟成交) 模式暂不支持 add_position_signal(低位加仓) 策略")
 
         wpri = {str(k).zfill(6): int(v) for k, v in self.watchlist_priority.items()}
 
@@ -237,28 +260,26 @@ class PortfolioEngine:
             dstr = indicators.dkey(day)
             sold_today: set[str] = set()
 
+            # ---- 0b. 执行昨日挂起的信号 (exec 模式: T日信号 → T+1 开盘/收盘成交, 先卖后买) ----
+            if self._p_sells or self._p_buys:
+                self._flush_pendings(day, dstr, sold_today)
+
             # ---- 1. 卖出 ----
             for pos in list(self.positions):
                 reason = self._sell_position(pos, day, dstr)
                 if not reason:
                     continue
-                px = self._close_on(pos.code, day)
-                if px is None or px <= 0:
-                    px = pos.entry_price
-                amount = pos.shares * px
-                self.cash += amount
-                self.trades.append({"date": dstr, "code": pos.code,
-                                    "direction": "SELL", "price": round(px, 4),
-                                    "volume": pos.shares,
-                                    "amount": round(amount, 2)})
-                self.events.append({"date": dstr, "code": pos.code, "direction": "SELL",
-                                    "price": round(px, 4), "volume": pos.shares,
-                                    "reason": reason})
-                self.positions.remove(pos)
-                sold_today.add(pos.code)
+                close_px = self._close_on(pos.code, day)
+                if self._sell_q:
+                    # 延迟: 挂起, 位置保留至执行日 (与旧引擎一致, 当日不 sold_today)
+                    self._p_sells.append({"pos": pos, "reason": reason,
+                                          "sig_date": dstr,
+                                          "sig_px": close_px or pos.entry_price})
+                    continue
+                px = close_px if close_px else pos.entry_price
+                self._sell_now(pos, px, day, dstr, reason, sold_today)
 
             # ---- 2. 买入 ----
-            add_fn = getattr(strat, "add_position_signal", None) or None
             slots = self.max_positions - len(self.positions)
             if slots > 0 and self.cash > self.initial_capital * 0.05:
                 held_pos = {p.code: p for p in self.positions}
@@ -266,7 +287,6 @@ class PortfolioEngine:
                 for code in self.codes:
                     if code in sold_today:
                         continue
-                    # 已持仓代码仅在策略支持 add_position_signal 时进入(低位加仓)
                     if code in held_pos and add_fn is None:
                         continue
                     ind = self._ind(code, dstr)
@@ -298,61 +318,48 @@ class PortfolioEngine:
                     cands.append((code, score, reason, entry_type))
 
                 cands.sort(key=lambda x: x[1], reverse=True)   # 稳定排序
-                for code, score, reason, entry_type in cands[:slots]:
-                    px = self._close_on(code, day)
-                    if px is None or px <= 0:
-                        continue
-                    pos = held_pos.get(code)
-                    if pos is not None:
-                        # 低位加仓: 补足到 position_pct * total_assets (旧引擎同款,
-                        # 含其“无 _last_price 时全部持仓按本候选价估值”的怪癖口径)
-                        total_assets = self.cash + sum(
-                            p.shares * px for p in self.positions)
-                        target = self.position_pct * total_assets
-                        cur_value = pos.shares * px
-                        add_alloc = max(0.0, min(self.cash, target - cur_value))
-                        if add_alloc < px * 100:
-                            continue
-                        add_shares = int(add_alloc / px / 100) * 100
-                        if add_shares <= 0:
-                            continue
-                        amount = add_shares * px
-                        old_cost = pos.entry_price * pos.shares
-                        pos.shares += add_shares
-                        pos.entry_price = (old_cost + amount) / pos.shares  # 摊薄
-                        self.cash -= amount
-                        self.trades.append({"date": dstr, "code": code,
-                                            "direction": "BUY", "price": round(px, 4),
-                                            "volume": add_shares,
-                                            "amount": round(amount, 2)})
-                        self.events.append({"date": dstr, "code": code,
-                                            "direction": "BUY", "price": round(px, 4),
-                                            "volume": add_shares,
-                                            "reason": f"低位加仓:{reason}"})
-                        continue
+                picks = cands[:slots]
 
-                    if self.full_position:
-                        alloc = self.cash * self.position_pct
-                    else:
-                        weight = self.position_pct * min(max(score, 0) / 10.0, 1.0)
-                        alloc = self.cash * weight
-                    if alloc < px * 100:
-                        continue
-                    shares = int(alloc / px / 100) * 100
-                    if shares <= 0:
-                        continue
-                    amount = shares * px
-                    self.cash -= amount
-                    self.positions.append(Position(
-                        code=code, name=self.names.get(code, code),
-                        shares=shares, entry_price=px, entry_date=day,
-                        entry_type=entry_type))
-                    self.trades.append({"date": dstr, "code": code,
-                                        "direction": "BUY", "price": round(px, 4),
-                                        "volume": shares, "amount": round(amount, 2)})
-                    self.events.append({"date": dstr, "code": code, "direction": "BUY",
-                                        "price": round(px, 4), "volume": shares,
-                                        "reason": reason})
+                if self._buy_q:
+                    # 延迟: 仅记录候选 (含信号价/评分), 次日开盘/收盘执行
+                    for code, score, reason, entry_type in picks:
+                        close_px = self._close_on(code, day)
+                        if close_px is None or close_px <= 0:
+                            continue
+                        self._p_buys.append({"code": code, "score": score,
+                                             "reason": reason,
+                                             "entry_type": entry_type,
+                                             "sig_date": dstr,
+                                             "sig_px": close_px})
+                else:
+                    for code, score, reason, entry_type in picks:
+                        px = self._close_on(code, day)
+                        if px is None or px <= 0:
+                            continue
+                        pos = held_pos.get(code)
+                        if pos is not None:
+                            # 低位加仓: 补足到 position_pct * total_assets (旧引擎同款,
+                            # 含其“无 _last_price 时全部持仓按本候选价估值”的怪癖口径)
+                            total_assets = self.cash + sum(
+                                p.shares * px for p in self.positions)
+                            target = self.position_pct * total_assets
+                            cur_value = pos.shares * px
+                            add_alloc = max(0.0, min(self.cash, target - cur_value))
+                            if add_alloc < px * 100:
+                                continue
+                            add_shares = int(add_alloc / px / 100) * 100
+                            if add_shares <= 0:
+                                continue
+                            amount = add_shares * px
+                            old_cost = pos.entry_price * pos.shares
+                            pos.shares += add_shares
+                            pos.entry_price = (old_cost + amount) / pos.shares  # 摊薄
+                            self.cash -= amount
+                            self._record_buy(code, dstr, day, px, add_shares,
+                                             f"低位加仓:{reason}")
+                            continue
+
+                        self._buy_new(code, score, reason, entry_type, px, day, dstr)
 
             # ---- 3. 估值 ----
             mv = 0.0
@@ -365,7 +372,9 @@ class PortfolioEngine:
                                         len(self._window_dates), self.trades)
         return {
             "meta": {
-                "engine": "vnpy_quanti PortfolioEngine (immediate close)",
+                "engine": "vnpy_quanti PortfolioEngine"
+                          + (" (immediate close)" if not self._exec_q
+                             else " (exec next-day fill)"),
                 "strategy": self.strategy_name,
                 "codes": list(self.codes),
                 "initial_capital": self.initial_capital,
@@ -380,6 +389,141 @@ class PortfolioEngine:
             "equity_curve": self.curve,
             "stats": stats,
         }
+
+    # ------------------------------------------------------------------ #
+    # 记账 & exec 撮合
+    # ------------------------------------------------------------------ #
+    def _record_buy(self, code: str, date_str: str, day, px: float, shares: int,
+                    reason: str) -> None:
+        """仅记账(现金已在调用侧扣除)。"""
+        amount = shares * px
+        self.trades.append({"date": date_str, "code": code, "direction": "BUY",
+                            "price": round(float(px), 4), "volume": shares,
+                            "amount": round(amount, 2),
+                            "signal_date": date_str, "signal_price": round(float(px), 4),
+                            "reason": reason})
+        self.events.append({"date": date_str, "code": code, "direction": "BUY",
+                            "price": round(float(px), 4), "volume": shares,
+                            "reason": reason})
+
+    def _buy_new(self, code: str, score: float, reason: str, entry_type: str,
+                 px: float, day, date_str: str) -> None:
+        if self.full_position:
+            alloc = self.cash * self.position_pct
+        else:
+            weight = self.position_pct * min(max(score, 0) / 10.0, 1.0)
+            alloc = self.cash * weight
+        if alloc < px * 100:
+            return
+        shares = int(alloc / px / 100) * 100
+        if shares <= 0:
+            return
+        amount = shares * px
+        self.cash -= amount
+        self.positions.append(Position(
+            code=code, name=self.names.get(code, code),
+            shares=shares, entry_price=px, entry_date=day, entry_type=entry_type))
+        self._record_buy(code, date_str, day, px, shares, reason)
+
+    def _sell_now(self, pos: Position, px: float, day, date_str: str, reason: str,
+                  sold_today: set[str]) -> None:
+        amount = pos.shares * px
+        self.cash += amount
+        self.trades.append({"date": date_str, "code": pos.code, "direction": "SELL",
+                            "price": round(float(px), 4), "volume": pos.shares,
+                            "amount": round(amount, 2),
+                            "signal_date": date_str, "signal_price": round(float(px), 4),
+                            "reason": reason})
+        self.events.append({"date": date_str, "code": pos.code, "direction": "SELL",
+                            "price": round(float(px), 4), "volume": pos.shares,
+                            "reason": reason})
+        self.positions.remove(pos)
+        sold_today.add(pos.code)
+
+    def _flush_pendings(self, day, date_str: str, sold_today: set[str]) -> None:
+        """exec: 在 T+1 执行挂起的卖出/买入 (先卖后买, 旧引擎 0b 步语义)。"""
+        sell_col = "close" if self.exec_next_close else "open"
+        buy_col = "close" if (self.exec_next_close or self.buy_next_close) else "open"
+
+        # 卖出: 释放现金
+        for item in self._p_sells:
+            pos = item["pos"]
+            if pos not in self.positions:
+                continue
+            px = self._open_on(pos.code, day) if sell_col == "open" \
+                else self._close_on(pos.code, day)
+            if px is None or px <= 0:
+                px = pos.entry_price
+            amount = pos.shares * px
+            self.cash += amount
+            self.trades.append({"date": date_str, "code": pos.code,
+                                "direction": "SELL",
+                                "price": round(float(px), 4),
+                                "volume": pos.shares,
+                                "amount": round(amount, 2),
+                                "signal_date": item["sig_date"],
+                                "signal_price": round(float(item["sig_px"]), 4),
+                                "reason": item["reason"]})
+            self.events.append({"date": item["sig_date"], "code": pos.code,
+                                "direction": "SELL",
+                                "price": round(float(item["sig_px"]), 4),
+                                "volume": pos.shares,
+                                "reason": item["reason"],
+                                "exec_date": date_str,
+                                "exec_price": round(float(px), 4)})
+            self.positions.remove(pos)
+            sold_today.add(pos.code)
+        self._p_sells.clear()
+
+        # 买入
+        slots = self.max_positions - len(self.positions)
+        for item in self._p_buys:
+            code = item["code"]
+            if code in sold_today or slots <= 0:
+                continue
+            px = self._open_on(code, day) if buy_col == "open" \
+                else self._close_on(code, day)
+            if px is None or px <= 0:
+                continue
+            if self.full_position:
+                alloc = self.cash * self.position_pct
+            else:
+                weight = self.position_pct * min(max(item["score"], 0) / 10.0, 1.0)
+                alloc = self.cash * weight
+            if alloc < px * 100:
+                continue
+            shares = int(alloc / px / 100) * 100
+            if shares <= 0:
+                continue
+            amount = shares * px
+            self.cash -= amount
+            self.positions.append(Position(
+                code=code, name=self.names.get(code, code), shares=shares,
+                entry_price=px, entry_date=day, entry_type=item["entry_type"]))
+            self.trades.append({"date": date_str, "code": code, "direction": "BUY",
+                                "price": round(float(px), 4), "volume": shares,
+                                "amount": round(amount, 2),
+                                "signal_date": item["sig_date"],
+                                "signal_price": round(float(item["sig_px"]), 4),
+                                "reason": item["reason"]})
+            self.events.append({"date": item["sig_date"], "code": code,
+                                "direction": "BUY",
+                                "price": round(float(item["sig_px"]), 4),
+                                "volume": shares,
+                                "reason": item["reason"],
+                                "exec_date": date_str,
+                                "exec_price": round(float(px), 4)})
+            slots -= 1
+        self._p_buys.clear()
+
+    def _open_on(self, code: str, today) -> float | None:
+        """该 code 在 <=today 的最近开盘价。"""
+        arr = self._open_last.get(code, [])
+        if not arr:
+            return None
+        keys = [x[0] for x in arr]
+        i = bisect.bisect_right(keys, indicators.dkey(today)) - 1
+        return arr[i][1] if i >= 0 else None
 
     def _last_close_of(self, code: str, day, dstr: str) -> float | None:
         """前一日 ind 收盘（rebound prev_close 用，与旧引擎一致）。"""

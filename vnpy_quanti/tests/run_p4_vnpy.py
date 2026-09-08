@@ -54,6 +54,10 @@ def main() -> int:
             max_holding_days=int(case.get("max_holding_days", 0)),
             watchlist_priority=case.get("watchlist_priority") or {},
             ranks=case.get("ranks") or {},
+            exec_next_open=bool(case.get("exec_next_open", False)),
+            exec_next_close=bool(case.get("exec_next_close", False)),
+            buy_next_open=bool(case.get("buy_next_open", False)),
+            buy_next_close=bool(case.get("buy_next_close", False)),
         )
         engine.load(dfs, case["start"], case.get("end", ""))
         res = engine.run(verbose=False)

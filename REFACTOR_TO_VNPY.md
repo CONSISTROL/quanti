@@ -287,6 +287,11 @@ python -m vnpy_quanti compare --new out.json --legacy ref.json
 | D 弱转强池 | reversal max2/pct0.5 | 20/20 ✅ | 242,626.74 | +21.31% |
 | E 动量池 | momentum max2/pct0.5 | 120/120 ✅ | 213,436.97 | +6.72% |
 | F 周线自选 | watchlist_weekly max2/pct0.5 | 281 去重对 ✅(含减仓/加仓) | 251,622.11 | +25.81% |
+| G 次日尾盘成交 | watchlist max1/full, exec_next_close | 61/61 ✅ | 317,189.02 | +111.46% |
+| H 次日开盘成交 | watchlist max2/pct0.5, exec_next_open | 104/104 ✅ | 263,968.30 | +31.98% |
+
+- PortfolioEngine 现同时支持 **immediate**（信号日收盘成交）与 **exec**（T 日信号 → T+1
+  开盘/收盘成交，含 buy_next_open/close 独立延迟）两套成交口径，先卖后买、执行日禁买与旧引擎 0b 步一致。
 
 - 修复三处口径：买入回退需 ≥60 根（旧引擎阈值，卖出为 ≥20）；gap_open/open 策略对次新标的
   走“轻量回退”(≥2 根, 非 60 根)；补齐 **reduce_signal 高位减仓**(减50%就地记账、不进

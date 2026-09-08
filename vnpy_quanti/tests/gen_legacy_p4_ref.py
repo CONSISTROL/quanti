@@ -112,8 +112,10 @@ def main() -> int:
             "watchlist_priority": {str(k): int(v)
                                    for k, v in case.get("watchlist_priority", {}).items()},
             "kelly_mode": False,
-            "exec_next_open": False, "exec_next_close": False,
-            "buy_next_open": False, "buy_next_close": False,
+            "exec_next_open": bool(case.get("exec_next_open", False)),
+            "exec_next_close": bool(case.get("exec_next_close", False)),
+            "buy_next_open": bool(case.get("buy_next_open", False)),
+            "buy_next_close": bool(case.get("buy_next_close", False)),
         }
         scored = pd.DataFrame([{
             "code": c, "name": c, "rank": 999,
