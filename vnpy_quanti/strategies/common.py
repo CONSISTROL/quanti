@@ -181,13 +181,12 @@ class SwingCtaTemplate(CtaTemplate):
         is_buy, score, reason = self.logic.buy_signal(ind)
         entry_type = "swing"
 
+        # 镜像旧引擎: is_buy 仅用于是否尝试“超跌反弹”买点;
+        # 最终买入门槛 = 加分后 score >= min_buy_score（策略内部 is_buy 不参与最终门槛）
         if not is_buy and self.has_rebound:
             is_rebound, r = self.logic.rebound_signal(ind, self._last_close)
             if is_rebound:
-                is_buy, score, reason, entry_type = True, 4, r, "rebound"
-
-        if not is_buy:
-            return
+                score, reason, entry_type = 4, r, "rebound"
 
         # 龙头加分: 个股模式 rank=1 恒在 TOP10 → +leader_bonus（旧引擎同款）
         if self.apply_leader_bonus:

@@ -221,7 +221,8 @@ class ReversalCta(CtaTemplate): ...
 ### ✅ P2 首个策略端到端（spike）：reversal × 601857
 - `vnpy_quanti/strategies/`：`SwingCtaTemplate`（镜像旧引擎个股决策流：最大持有/rebound 规则/
   sell_signal 卖出序、buy_signal/rebound 买入、整手全仓/按分仓位、执行日禁买）+ `ReversalCta`。
-- 回测跑在 `vnpy_ctastrategy.BacktestingEngine`（日线 BAR），成交 = vnpy 原生“信号次日开盘”口径。
+- 回测跑在 `vnpy_ctastrategy.BacktestingEngine` 派生的 `QuantiBacktestEngine`（日线 BAR，
+  默认信号日收盘成交 = 旧引擎 immediate 口径；`--fill native` 为 vnpy 原生次 bar 开盘口径）。
 - 数据：`cache/quantdash_watchlist_20260908.pkl`（601857，4000 根），区间 2025-01-01 ~ 2026-09-08。
 
 **验证结果**（详见 `reports/vnpy_compare/{new,ref}_601857.json`）：
@@ -230,7 +231,7 @@ class ReversalCta(CtaTemplate): ...
 |---|---|
 | G1 数据 | 同源同规范化：history_rows 4000 = 4000 ✅ |
 | G2 信号 | 决策 6 条（3 买 3 卖）日期+方向与 legacy **100% 一致** ✅ |
-| G3 绩效 | 同公式统计：vnpy +41.12% / 年化 23.64% / Sharpe 2.24 / 回撤 3.06% vs legacy +40.68% / 23.41% / 2.24 / 3.08% —— 差=成交时点（legacy 信号日收盘 vs vnpy 次日开盘），信号层全等 ✅ |
+| G3 绩效 | fill=close：最终净值 211,026.13 vs 211,026.12、总收益均 +40.68%（逐分一致）✅ |
 
 用法：
 ```bash
@@ -246,7 +247,29 @@ python vnpy_quanti/tests/gen_legacy_ref.py --stock 601857 --strategy reversal \
 python -m vnpy_quanti compare --new out.json --legacy ref.json
 ```
 
-### ⏭ 下一步（P3）
-- 迁移 `bollinger / momentum / gap_open / gap_open_open` 为 CtaTemplate 并各跑 G2。
-- 组合语义（自选轮动 watchlist 资金池/优先级）在 P4 评估 `vnpy_portfoliostrategy` 或自研多标的运行器。
+### ✅ P3 其余 swing 策略迁移 + 批量验证矩阵
+- 新增 `vnpy_quanti/engine.py` `QuantiBacktestEngine(BacktestingEngine)`：**信号日收盘成交**档
+  （on_bar 新挂单按当根 bar 收盘撮合），镜像旧引擎 immediate 口径；`--fill native` 可回到 vnpy 原生次 bar 开盘撮合。
+- 迁移 `bollinger / momentum / gap_open / gap_open_open`（`strategies/*_cta.py`），判定仍单源复用 legacy。
+- 关键发现（写进 `SwingCtaTemplate`）：旧引擎买入门槛 = **加分后 `score >= min_buy_score`**，
+  策略内部 `is_buy` 仅用于“是否尝试超跌反弹买点”——momentum 返回 `(False, score3)` 的日子旧引擎照买
+  （3+2≥4），初版 wrapper 误以 is_buy 拦截导致漏单，已按旧引擎语义修正。
+
+**批量验证**（`vnpy_quanti/tests/run_p3_matrix.py`，区间 2024-01-01~数据最新，fill=close；产物 `reports/vnpy_compare/p3_*.json` + `p3_report.md`）：
+
+| 策略×标的 | G2 命中 | vnpy 收益 | legacy 收益 |
+|---|---|---|---|
+| bollinger×601857 | 4/4 ✅ | +3.19% | +3.19% |
+| bollinger×600547 | 2/2 ✅ | -7.36% | -7.36% |
+| bollinger×002832 | 2/2 ✅ | -3.19% | -3.19% |
+| momentum×601857 | 54/54 ✅ | +29.46% | +29.46% |
+| momentum×600547 | 64/64 ✅ | +36.82% | +36.82% |
+| gap_open×002832 | 12/12 ✅ | +14.50% | +14.50% |
+| gap_open×600547 | 22/22 ✅ | -5.33% | -5.33% |
+| gap_open_open×002832 / ×600547 | 0/0 ✅（大票无开盘跳空≥3%信号） | — | — |
+
+→ 全部单标的 swing 策略 G2 信号 100% 一致，fill=close 下 G3 绩效与 legacy 逐分一致（费率 0）。
+
+### ⏭ 下一步（P4）
+- 组合语义（自选轮动 watchlist 资金池/优先级/双口径）评估 `vnpy_portfoliostrategy` 或自研多标的运行器。
 - 旧系统 `quantlab/*`、`tests/*`、Web 控制台保持零改动。

@@ -49,6 +49,14 @@ def vt_to_parts(vt_symbol: str) -> tuple[str, Exchange]:
     return code, Exchange(ex)
 
 
+def sina_of_pure(code6: str) -> str:
+    """6 位纯代码 → legacy sina key（sh/sz/bj + code）。"""
+    code = code6.zfill(6)
+    ex = exchange_of_pure(code)
+    prefix = {Exchange.SSE: "sh", Exchange.SZSE: "sz", Exchange.BSE: "bj"}.get(ex, "sh")
+    return f"{prefix}{code}"
+
+
 def vt_to_sina(vt_symbol: str) -> str:
     code, ex = vt_to_parts(vt_symbol)
     prefix = {Exchange.SSE: "sh", Exchange.SZSE: "sz", Exchange.BSE: "bj"}.get(ex, "sh")

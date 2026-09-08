@@ -13,6 +13,7 @@ import numpy as np
 
 from . import adapters, indicators
 from .database import QuantCacheDatabase
+from .engine import QuantiBacktestEngine
 from .indicators import dkey
 from .legacy_access import REPO_ROOT, ensure_legacy_importable
 from .strategies import get_cta_strategy
@@ -20,7 +21,6 @@ from .strategies import get_cta_strategy
 ensure_legacy_importable()
 
 from vnpy.trader.constant import Interval          # noqa: E402
-from vnpy_ctastrategy.backtesting import BacktestingEngine  # noqa: E402
 
 
 def load_config_defaults() -> dict:
@@ -51,8 +51,13 @@ def run_stock_backtest(code6: str, strategy: str = "reversal", *,
                        cache_dir: str = "cache", prefer_watchlist: str | None = None,
                        start_date: str | None = None, end_date: str | None = None,
                        initial_capital: float | None = None,
+                       fill: str = "close",
                        verbose: bool = True) -> dict:
-    """单标的 vnpy 回测。返回结构化结果 dict。"""
+    """单标的 vnpy 回测。返回结构化结果 dict。
+
+    fill: "close" = 信号日收盘成交 (QuantiBacktestEngine, 镜像旧引擎 immediate 口径)
+          "native" = vnpy 原生次 bar 开盘撮合
+    """
     from vnpy.trader.constant import Interval as Ivl
 
     code6 = str(code6).zfill(6)
@@ -72,7 +77,8 @@ def run_stock_backtest(code6: str, strategy: str = "reversal", *,
     vt_symbol = sina_to_vt(sina_code)
 
     QuantCacheDatabase.install({vt_symbol: df})
-    engine = BacktestingEngine()
+    engine = QuantiBacktestEngine()
+    engine.same_bar_close_fill = (fill == "close")
     engine.set_parameters(
         vt_symbol=vt_symbol,
         interval=Interval.DAILY,
@@ -147,7 +153,8 @@ def run_stock_backtest(code6: str, strategy: str = "reversal", *,
 
     result = {
         "meta": {
-            "engine": "vnpy 4.4 BacktestingEngine",
+            "engine": "vnpy 4.4 QuantiBacktestEngine",
+            "fill": fill,
             "code": code6, "sina_code": sina_code, "vt_symbol": vt_symbol,
             "strategy": strategy, "start": start, "end": end,
             "initial_capital": capital, "window_days": len(window_dates),
@@ -262,6 +269,9 @@ def main(argv=None) -> int:
     parser.add_argument("--start", default=None)
     parser.add_argument("--end", default=None)
     parser.add_argument("--capital", type=float, default=None)
+    parser.add_argument("--fill", default="close",
+                        choices=["close", "native"],
+                        help="close=信号日收盘成交(旧引擎口径, 默认); native=vnpy 次bar开盘")
     parser.add_argument("--out", default=None, help="结果 JSON 输出路径")
     args = parser.parse_args(argv)
 
@@ -274,6 +284,7 @@ def main(argv=None) -> int:
         code.zfill(6), args.strategy,
         cache_dir=args.cache_dir, prefer_watchlist=args.watchlist_pkl,
         start_date=args.start, end_date=args.end, initial_capital=args.capital,
+        fill=args.fill,
     )
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:

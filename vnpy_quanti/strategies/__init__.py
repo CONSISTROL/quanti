@@ -1,12 +1,19 @@
 """vnpy_quanti 策略注册（CtaTemplate 子类）。"""
 from __future__ import annotations
 
+from .bollinger_cta import BollingerCta
 from .common import SwingCtaTemplate
+from .gap_open_cta import GapOpenCta, GapOpenOpenCta
+from .momentum_cta import MomentumCta
 from .reversal_cta import ReversalCta
 
 CTA_STRATEGIES: dict[str, type[SwingCtaTemplate]] = {
     "reversal": ReversalCta,
-    # P3: bollinger / momentum / gap_open / gap_open_open
+    "bollinger": BollingerCta,
+    "momentum": MomentumCta,
+    "gap_open": GapOpenCta,
+    "gap_open_open": GapOpenOpenCta,
+    # P4: watchlist / watchlist_weekly（组合语义，见设计文档）
 }
 
 

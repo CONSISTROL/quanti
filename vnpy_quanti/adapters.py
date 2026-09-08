@@ -97,6 +97,10 @@ def load_symbol_df(cache_dir: str, code6: str, prefer_watchlist: str | None = No
     pure = code6.zfill(6)
     for p in paths:
         frames = load_pkl_df(p)
+        if len(frames) == 1 and "df" in frames:
+            # 单股缓存 kline_1d_{code}.pkl -> {'df': ...}
+            from .symbols import sina_of_pure
+            return frames["df"], sina_of_pure(pure)
         for sina_key, df in frames.items():
             k = sina_key.strip().lower().lstrip("shszbj").zfill(6)
             if k == pure:

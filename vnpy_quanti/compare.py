@@ -66,8 +66,17 @@ def compare(new: dict, legacy: dict) -> int:
 
     print()
     print("=" * 72)
-    print("G3 — 绩效对比（统计公式同源，但成交时点不同：legacy=信号日收盘 / vnpy=次bar开盘）")
+    print("G3 — 绩效对比（统计公式同源）")
     print("=" * 72)
+
+    fill = (new.get("meta") or {}).get("fill", "close")
+    if fill == "close":
+        note = ("vnpy fill=close（QuantiBacktestEngine 信号日收盘成交）与 legacy immediate 同为"
+                "信号日收盘口径，数字应分毫不差；剩余差异=费用/统计浮点/双口径。")
+    else:
+        note = ("vnpy fill=native（次bar开盘撮合）vs legacy 信号日收盘成交："
+                "收益差异属成交时点执行口径，G2 信号层一致即通过。")
+    print(f"  口径: {note}")
 
     ns, ls = new["stats"], legacy["stats"]
     rows = [
@@ -90,8 +99,6 @@ def compare(new: dict, legacy: dict) -> int:
             print(f"  {label:<10}  vnpy {fmt_stat(a):>12}  legacy {fmt_stat(b):>12}")
 
     print()
-    print("说明: 收益/净值差异主要来自成交时点 (legacy immediate=信号日收盘价成交,", )
-    print("      vnpy=信号次日开盘价成交)；若 G2 全等则信号层一致, 数字差属执行口径。")
     print("=" * 72)
     print("G2 结果:", "PASS ✅" if exit_code == 0 else "FAIL ❌ (见上方差异)")
     return exit_code
