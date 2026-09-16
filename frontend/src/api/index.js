@@ -9,7 +9,19 @@ http.interceptors.response.use(
   (res) => res.data,
   (err) => {
     const detail = err.response?.data?.detail
-    return Promise.reject(new Error(detail || err.message || '请求失败'))
+    // FastAPI 的参数校验错误(422)把 detail 返回成数组;直接丢进 Error 会显示成
+    // "[object Object]",所以这里把数组摊平成可读文本。
+    let message
+    if (typeof detail === 'string') {
+      message = detail
+    } else if (Array.isArray(detail)) {
+      message = detail
+        .map((d) => `${(d.loc || []).filter((x) => x !== 'body' && x !== 'query').join('.')}: ${d.msg || ''}`)
+        .join(';')
+    } else {
+      message = err.message || '请求失败'
+    }
+    return Promise.reject(new Error(message))
   }
 )
 
@@ -36,7 +48,14 @@ export const api = {
   job: (id) => http.get(`/jobs/${id}`),
   jobLogs: (id, after = 0) => http.get(`/jobs/${id}/logs`, { params: { after } }),
   jobResult: (id) => http.get(`/jobs/${id}/result`),
-  cancelJob: (id) => http.post(`/jobs/${id}/cancel`)
+  cancelJob: (id) => http.post(`/jobs/${id}/cancel`),
+  marketIndices: () => http.get('/market/indices'),
+  marketOverview: (refresh = false) => http.get('/market/overview', { params: { refresh } }),
+  marketChan: (code, interval = '1d', refresh = false) =>
+    http.get(`/market/chan/${encodeURIComponent(code)}`, { params: { interval, refresh } }),
+  marketSimulate: (code, interval = '1d', capital = 100000, refresh = false) =>
+    http.get(`/market/chan/${encodeURIComponent(code)}/simulate`,
+             { params: { interval, capital, refresh }, timeout: 120000 })
 }
 
 export default api

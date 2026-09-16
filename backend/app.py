@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -34,10 +35,42 @@ from backend.jobs import JobManager  # noqa: E402
 async def lifespan(app: FastAPI):
     """Start the watchlist intraday-T monitor with the web service."""
     intraday_monitor.start()
+    _warm_market_cache()
     try:
         yield
     finally:
         intraday_monitor.stop()
+
+
+def _warm_market_cache() -> None:
+    """后台预热指数K线缓存。
+
+    「缠论看盘」概览要覆盖 7 个指数 × 3 个级别,冷启动要串行拉 20 多组数据、十几秒;
+    放在启动时后台预热,用户点开页面时通常已命中缓存。取不到数据不影响服务运行。
+    """
+    def run():
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            from backend.market import INDICES, PERIOD, fetch_index_df
+
+            jobs = [(i["code"], iv) for i in INDICES for iv in PERIOD]
+
+            def one(kv):
+                try:
+                    fetch_index_df(kv[0], kv[1])
+                except Exception:
+                    return None
+                return None
+
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                list(ex.map(one, jobs))
+        except Exception:
+            pass
+
+    try:
+        threading.Thread(target=run, name="market-cache-warm", daemon=True).start()
+    except Exception:
+        pass
 
 
 app = FastAPI(title="Quanti Web Console", version="0.1.0", lifespan=lifespan)
@@ -220,6 +253,57 @@ def kline(code: str, strategy: Optional[str] = None, max_bars: int = Query(500, 
         from backend.kline import get_kline_data
         return get_kline_data(code, strategy=strategy, max_bars=max_bars,
                               interval=interval, refresh=refresh)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/market/indices")
+def market_indices():
+    """可用于缠论看盘的宽基指数 + 自选股清单。"""
+    from backend.market import list_indices
+    return {"indices": list_indices(), "watchlist": market_watchlist()}
+
+
+@app.get("/api/market/watchlist")
+def market_watchlist():
+    try:
+        from backend.market import watchlist
+        return watchlist()
+    except Exception:
+        return []
+
+
+@app.get("/api/market/overview")
+def market_overview(refresh: bool = False):
+    """全部宽基指数 × 日/周/月 的缠论结构摘要与强弱对比(第106课板块强弱指标)。"""
+    try:
+        from backend.market import market_overview as _overview
+        return _overview(refresh=refresh)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/market/chan/{code}")
+def market_chan(code: str, interval: str = Query("1d", pattern="^(1d|1w|1M)$"),
+                refresh: bool = False):
+    """单个标的的缠论结构分析:分型/笔/线段/中枢/背驰/三类买卖点/均线九分类。
+
+    code 命中宽基指数注册表时按指数处理,否则按个股/ETF 走前复权通路。
+    """
+    try:
+        from backend.market import analyze_target
+        return analyze_target(code, interval=interval, refresh=refresh)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/market/chan/{code}/simulate")
+def market_chan_simulate(code: str, interval: str = Query("1d", pattern="^(1d|1w|1M)$"),
+                         capital: float = Query(100000.0, gt=0), refresh: bool = False):
+    """缠论买卖点驱动的交易模拟:两种仓位策略 + 买入持有基准,含交易记录与绩效。"""
+    try:
+        from backend.market import simulate_target
+        return simulate_target(code, interval=interval, capital=capital, refresh=refresh)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

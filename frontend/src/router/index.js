@@ -4,6 +4,7 @@ const routes = [
   { path: '/', redirect: '/dashboard' },
   { path: '/dashboard', name: 'Dashboard', component: () => import('../views/DashboardView.vue'), meta: { title: '仪表盘' } },
   { path: '/selection', name: 'Selection', component: () => import('../views/SelectionView.vue'), meta: { title: '选股系统' } },
+  { path: '/chan', name: 'ChanMarket', component: () => import('../views/ChanMarketView.vue'), meta: { title: '缠论看盘' } },
   { path: '/portfolio-optimizer', name: 'PortfolioOptimizer', component: () => import('../views/PortfolioOptimizerView.vue'), meta: { title: '组合优化' } },
   { path: '/kline', name: 'StockDecision', component: () => import('../views/SuperKlineView.vue'), meta: { title: '个股决策' } },
   { path: '/intraday-t', name: 'IntradayT', component: () => import('../views/IntradayTView.vue'), meta: { title: '日内做T' } },

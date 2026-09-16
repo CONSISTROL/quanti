@@ -20,6 +20,10 @@
           <el-icon><Odometer /></el-icon>
           <span>仪表盘</span>
         </el-menu-item>
+        <el-menu-item index="/chan">
+          <el-icon><Compass /></el-icon>
+          <span>缠论看盘</span>
+        </el-menu-item>
         <el-menu-item index="/selection">
           <el-icon><Grid /></el-icon>
           <span>选股系统</span>

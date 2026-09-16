@@ -32,6 +32,9 @@ frontend/dist/
 .idea/
 *.swp
 
+# AI 工具本地目录:worktrees 是整份工作树副本(含 node_modules),settings.local 是本机配置
+.claude/
+
 # OS
 Thumbs.db
 .DS_Store
