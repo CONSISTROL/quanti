@@ -195,25 +195,48 @@ def _last_zhongshu_summary(zs: list[dict]) -> dict | None:
     z = zs[-1]
     return {"start_date": z["start_date"], "end_date": z["end_date"],
             "zg": z["zg"], "zd": z["zd"], "bi_count": z["bi_count"],
-            "is_extended": z["is_extended"], "is_current": z["is_current"]}
+            "is_extended": z["is_extended"], "is_current": z["is_current"],
+            "leave_date": z.get("leave_date"), "leave_reason": z.get("leave_reason")}
 
 
-def analyze_target(code: str, interval: str = "1d", refresh: bool = False) -> dict:
+def _slice_range(df: pd.DataFrame, start: str | None, end: str | None) -> pd.DataFrame:
+    """按日期切片。刻意在**取数之后**切,不动 fetch_target_df 的缓存(缓存的是完整窗口)。
+
+    用固定起始日而不是"最后 N 根"能带来一个实际好处:笔/中枢的划分不再因为最老的
+    K线掉出窗口而整体移动 —— 实测固定起点时后续行情只改写最后一笔,历史部分稳定。
+    """
+    if start:
+        df = df[df["date"] >= pd.to_datetime(start)]
+    if end:
+        # 终止日按"含当天"处理
+        df = df[df["date"] <= pd.to_datetime(end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)]
+    return df.reset_index(drop=True)
+
+
+def analyze_target(code: str, interval: str = "1d", refresh: bool = False,
+                   start: str | None = None, end: str | None = None) -> dict:
     """单个标的(宽基指数或个股/ETF)单级别的完整缠论分析。
 
     含高一级别,供第089课的中阴阶段判定。个股与指数走同一条分析路径,区别只在取数。
+    start/end 用于限定分析区间(对笔与中枢的划分有实际影响)。
     """
     from quantlab.chan import analyze, quick_zhongshus
 
     kind, item = resolve(code)
-    df = fetch_target_df(kind, item["code"], interval, refresh=refresh)
+    df = _slice_range(fetch_target_df(kind, item["code"], interval, refresh=refresh), start, end)
+    if len(df) < 10:
+        raise ValueError(f"所选区间内只有 {len(df)} 根K线,不够做结构分析")
     hi = higher_interval(interval)
     higher_zs: list[dict] = []
     higher_note = None
     if hi:
         try:
-            hdf = fetch_target_df(kind, item["code"], hi, refresh=refresh)
-            higher_zs = quick_zhongshus(hdf)
+            hdf = _slice_range(fetch_target_df(kind, item["code"], hi, refresh=refresh), start, end)
+            if len(hdf) >= 8:
+                higher_zs = quick_zhongshus(hdf)
+            else:
+                higher_note = (f"所选区间在高一级别({hi})只有 {len(hdf)} 根K线,"
+                               f"第089课的中阴阶段未能判定")
         except Exception as e:  # 高一级别取不到时中阴阶段无法判定,如实说明而不是假装没有
             higher_note = f"高一级别({hi})数据不可用,第089课的中阴阶段未能判定:{e}"
 
@@ -223,6 +246,8 @@ def analyze_target(code: str, interval: str = "1d", refresh: bool = False) -> di
     res["kind"] = kind
     res["sym"] = item.get("sym")
     res["higher_interval"] = hi
+    res["range"] = {"start": start or res["dates"][0], "end": end or res["dates"][-1],
+                    "custom": bool(start or end)}
     if higher_note:
         res["zhongyin"] = {"active": None, "note": higher_note, "lesson": "089"}
     closes = df["close"].tolist()
@@ -241,22 +266,24 @@ _sim_cache: dict = {}
 
 
 def simulate_target(code: str, interval: str = "1d", capital: float = 100000.0,
-                    refresh: bool = False) -> dict:
+                    refresh: bool = False, start: str | None = None,
+                    end: str | None = None) -> dict:
     """缠论买卖点驱动的交易模拟(两种仓位策略 + 买入持有基准)。
 
-    严格逐根重算以消除未来函数,代价是一次 2~3s,所以结果按 (标的, 级别, 本金) 缓存。
+    严格逐根重算以消除未来函数,代价是一次 2~3s,所以结果按
+    (标的, 级别, 本金, 区间) 缓存。
     """
     import time
 
     kind, item = resolve(code)
-    key = (item["code"], interval, round(float(capital), 2))
+    key = (item["code"], interval, round(float(capital), 2), start or "", end or "")
     now = time.time()
     hit = _sim_cache.get(key)
     if hit and not refresh and now - hit[0] < _SIM_TTL:
         return hit[1]
 
     from quantlab.chan.simulate import run_all
-    df = fetch_target_df(kind, item["code"], interval, refresh=refresh)
+    df = _slice_range(fetch_target_df(kind, item["code"], interval, refresh=refresh), start, end)
     res = run_all(df, interval=interval, capital=float(capital))
     res["code"] = item["code"]
     res["name"] = item["name"]

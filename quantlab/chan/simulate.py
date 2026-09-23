@@ -29,6 +29,47 @@ MIN_BARS_BY_LEVEL = {"1d": 120, "1w": 90, "1M": 60}
 BUY_KINDS = ("buy1", "buy2", "buy3")
 SELL_KINDS = ("sell1", "sell2", "sell3")
 
+# 绩效函数按「年化 = (1+总收益)^(252/交易日数) - 1」计算,夏普按 sqrt(252) 年化,
+# 所以喂给它的必须是**交易日数**与**每年的周期数**,不能是K线根数。
+PERIODS_PER_YEAR = {"1d": 252, "1w": 52, "1M": 12}
+
+
+def trading_days_of(dates: list[str], interval: str) -> int:
+    """把曲线长度换算成交易日数。
+
+    日线的每根K线就是一个交易日,直接用根数最准;周线/月线按**实际日历跨度**换算 ——
+    月线 342 根是 28 年,当成 342 个交易日年化会把结果放大 25 倍以上。
+    """
+    import datetime as dt
+
+    if interval == "1d" or len(dates) < 2:
+        return max(1, len(dates))
+    try:
+        d0 = dt.datetime.strptime(dates[0], "%Y-%m-%d")
+        d1 = dt.datetime.strptime(dates[-1], "%Y-%m-%d")
+        return max(1, round((d1 - d0).days / 365.25 * 252))
+    except Exception:
+        factor = 5 if interval == "1w" else 21
+        return max(1, len(dates) * factor)
+
+
+def _sharpe(curve: list, periods_per_year: int) -> float:
+    """按曲线自身的周期数年化夏普。
+
+    vnpy_quanti.metrics 里那份固定用 sqrt(252),对月线曲线会高估 4.6 倍
+    (sqrt(252/12)),所以这里自己算一遍覆盖掉。
+    """
+    import numpy as np
+
+    vals = [float(v) for _, v in curve]
+    rets = [vals[i] / vals[i - 1] - 1 for i in range(1, len(vals)) if vals[i - 1] > 0]
+    if len(rets) < 2:
+        return 0.0
+    sd = float(np.std(rets))
+    if sd <= 0:
+        return 0.0
+    return float(np.mean(rets) / sd * np.sqrt(periods_per_year))
+
 
 def _lean(sub):
     """只算回测需要的部分:分型→笔→中枢→背驰→买卖点 + 当前走势类型。
@@ -82,9 +123,13 @@ def walk_forward_events(df, interval: str = "1d", min_bars: int | None = None) -
                 "signal_price": s["price"], "note": s["note"], "lesson": s["lesson"],
                 "index": t, "exec_index": exec_index,
                 "exec_date": dates[exec_index], "exec_price": opens[exec_index],
-                # 信号标在极值点上,而那时它还没被确认 —— 这里记下从极值到可成交之间
-                # 隔了多少根K线,让使用者看清"信号出现"和"能下单"之间差了多少行情
-                "signal_index": s["bar"], "lag_bars": exec_index - s["bar"],
+                # 信号标在极值点上,而那时它还没被确认。这里把间隔拆成两段:
+                # confirm_lag 是「极值那根 -> 结构上能被判定为分型/笔端点」用的根数,
+                # 它是第062课分型定义(三根K线)的必然结果,不是额外规则;
+                # 再加 1 根是按约定在次日开盘成交。
+                "signal_index": s["bar"],
+                "confirm_lag": t - s["bar"],
+                "lag_bars": exec_index - s["bar"],
                 "trend_kind": trend["kind"], "zhongshu_count": zcount,
             })
         for d in divs:
@@ -99,7 +144,9 @@ def walk_forward_events(df, interval: str = "1d", min_bars: int | None = None) -
                 "signal_price": d["price"], "note": d["note"], "lesson": d["lesson"],
                 "index": t, "exec_index": exec_index,
                 "exec_date": dates[exec_index], "exec_price": opens[exec_index],
-                "signal_index": d.get("bar"), "lag_bars": exec_index - d.get("bar", exec_index),
+                "signal_index": d.get("bar"),
+                "confirm_lag": t - d.get("bar", t),
+                "lag_bars": exec_index - d.get("bar", exec_index),
                 "trend_kind": trend["kind"], "zhongshu_count": zcount,
             })
     events.sort(key=lambda e: (e["exec_index"], e["index"]))
@@ -166,7 +213,7 @@ def simulate(df, events, mode: str, capital: float = 100000.0,
                     "kind": kind, "label": ev["label"],
                     "signal_date": ev["signal_date"], "signal_price": ev["signal_price"],
                     "fraction": frac, "trend_kind": ev.get("trend_kind"),
-                    "lag_bars": ev.get("lag_bars"),
+                    "lag_bars": ev.get("lag_bars"), "confirm_lag": ev.get("confirm_lag"),
                     "reason": ev["note"], "lesson": ev["lesson"],
                     "pnl_pct": None,
                 })
@@ -184,7 +231,7 @@ def simulate(df, events, mode: str, capital: float = 100000.0,
                     "kind": kind, "label": ev["label"],
                     "signal_date": ev["signal_date"], "signal_price": ev["signal_price"],
                     "fraction": None, "trend_kind": ev.get("trend_kind"),
-                    "lag_bars": ev.get("lag_bars"),
+                    "lag_bars": ev.get("lag_bars"), "confirm_lag": ev.get("confirm_lag"),
                     "reason": ev["note"], "lesson": ev["lesson"],
                     "pnl_pct": round(price / cost_basis - 1, 6) if cost_basis > 0 else None,
                 })
@@ -235,33 +282,47 @@ def run_all(df, interval: str = "1d", capital: float = 100000.0) -> dict:
     # 基准也从同一根开始,保证三条曲线覆盖完全相同的区间
     start_index = max(0, start_index - 1)
 
+    ppy = PERIODS_PER_YEAR.get(interval, 252)
+
+    def _stats(curve, trades):
+        td = trading_days_of([d for d, _ in curve], interval)
+        st = calc_legacy_style_stats(curve, capital, td, trades)
+        if st:
+            st["sharpe"] = _sharpe(curve, ppy)
+        return st
+
     strategies = []
     for mode, name in (("full", "三类买卖点 · 每次满仓"),
                        ("rule049", "三类买卖点 · 第049课分仓")):
         r = simulate(df, events, mode, capital=capital, start_index=start_index)
-        stats = calc_legacy_style_stats(r["curve"], capital, len(r["curve"]), r["trades"])
         strategies.append({
             "key": mode, "name": name,
             "curve": r["curve"], "trades": r["trades"], "skipped": r["skipped"],
-            "stats": stats, "open_position": r["open_position"], "exposure": r["exposure"],
+            "stats": _stats(r["curve"], r["trades"]),
+            "open_position": r["open_position"], "exposure": r["exposure"],
         })
 
     bm = benchmark(df, capital=capital, start_index=start_index)
-    bm_stats = calc_legacy_style_stats(bm["curve"], capital, len(bm["curve"]), [])
+    bm_curve = bm["curve"]
+    bm_stats = _stats(bm_curve, [])
     bm_stats.update({"win_rate": None, "profit_loss_ratio": None,
                      "total_trades": None, "avg_win": None, "avg_loss": None})
+    bars = len(bm_curve)
+    tdays = trading_days_of([d for d, _ in bm_curve], interval)
 
     return {
         "capital": capital,
         "interval": interval,
         "min_bars": MIN_BARS_BY_LEVEL.get(interval, LEAN_MIN_BARS),
         "events": len(events),
-        "start_date": bm["curve"][0][0] if bm["curve"] else None,
-        "end_date": bm["curve"][-1][0] if bm["curve"] else None,
-        "trading_days": len(bm["curve"]),
+        "start_date": bm_curve[0][0] if bm_curve else None,
+        "end_date": bm_curve[-1][0] if bm_curve else None,
+        "bars": bars,
+        "trading_days": tdays,
+        "years": round(tdays / 252, 2),
         "strategies": strategies,
         "benchmark": {"key": "benchmark", "name": "买入持有(基准)",
-                      "curve": bm["curve"], "stats": bm_stats, "trades": [],
+                      "curve": bm_curve, "stats": bm_stats, "trades": [],
                       "exposure": 1.0},
         "rules": {
             "signals": "一买/二买/三买买入,一卖/二卖/三卖卖出;另按第049课「背驰清仓」,"
@@ -269,6 +330,13 @@ def run_all(df, interval: str = "1d", capital: float = 100000.0) -> dict:
             "execution": (f"严格逐根重算:第 t 根收盘后才用 [0..t] 的数据重算结构,那一刻才出现的"
                           f"信号在 t+1 开盘价成交,消除未来函数。预热 {MIN_BARS_BY_LEVEL.get(interval, LEAN_MIN_BARS)} 根"
                           f"K线才开始(结构需要足够历史才能析出笔与中枢)"),
+            "annualize": (f"年化按真实交易日数折算(本区间 {tdays} 个交易日 ≈ {round(tdays/252, 2)} 年),"
+                          f"夏普按每年 {ppy} 个周期年化 —— 周线、月线不能用K线根数当交易日数"),
+            "lag_note": ("交易记录里的「结构确认 N 根」不是原文的规则,原文没有规定任何成交时点。"
+                         "它由两部分组成:①结构确认的根数 —— 这是第062课分型定义(三根K线)"
+                         "的必然结果,极值那根要等后续K线走完才能被判定为分型/笔端点,"
+                         "多数情况只要 1 根,但行情持续创新极值时可能拖到几十根;"
+                         "②次日开盘 1 根 —— 纯粹是本页约定的成交方式"),
             "strategy_a": "每次满仓(与 config.json 的 full_position 一致)",
             "strategy_b": ("第049课「中枢上移满仓,中枢震荡上减下增,三卖后不回补」:"
                            "建仓时为上涨趋势满仓、盘整则半仓;三卖清仓后跳过紧接着的二买"),

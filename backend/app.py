@@ -285,25 +285,32 @@ def market_overview(refresh: bool = False):
 
 @app.get("/api/market/chan/{code}")
 def market_chan(code: str, interval: str = Query("1d", pattern="^(1d|1w|1M)$"),
+                start: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+                end: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
                 refresh: bool = False):
     """单个标的的缠论结构分析:分型/笔/线段/中枢/背驰/三类买卖点/均线九分类。
 
     code 命中宽基指数注册表时按指数处理,否则按个股/ETF 走前复权通路。
+    start/end 限定分析区间 —— 对笔与中枢的划分有实际影响(见 market._slice_range)。
     """
     try:
         from backend.market import analyze_target
-        return analyze_target(code, interval=interval, refresh=refresh)
+        return analyze_target(code, interval=interval, refresh=refresh, start=start, end=end)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/market/chan/{code}/simulate")
 def market_chan_simulate(code: str, interval: str = Query("1d", pattern="^(1d|1w|1M)$"),
-                         capital: float = Query(100000.0, gt=0), refresh: bool = False):
+                         capital: float = Query(100000.0, gt=0),
+                         start: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+                         end: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+                         refresh: bool = False):
     """缠论买卖点驱动的交易模拟:两种仓位策略 + 买入持有基准,含交易记录与绩效。"""
     try:
         from backend.market import simulate_target
-        return simulate_target(code, interval=interval, capital=capital, refresh=refresh)
+        return simulate_target(code, interval=interval, capital=capital,
+                               refresh=refresh, start=start, end=end)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -51,11 +51,15 @@ export const api = {
   cancelJob: (id) => http.post(`/jobs/${id}/cancel`),
   marketIndices: () => http.get('/market/indices'),
   marketOverview: (refresh = false) => http.get('/market/overview', { params: { refresh } }),
-  marketChan: (code, interval = '1d', refresh = false) =>
-    http.get(`/market/chan/${encodeURIComponent(code)}`, { params: { interval, refresh } }),
-  marketSimulate: (code, interval = '1d', capital = 100000, refresh = false) =>
+  marketChan: (code, interval = '1d', refresh = false, range = null) =>
+    http.get(`/market/chan/${encodeURIComponent(code)}`, {
+      params: { interval, refresh, start: range?.[0] || undefined, end: range?.[1] || undefined }
+    }),
+  marketSimulate: (code, interval = '1d', capital = 100000, refresh = false, range = null) =>
     http.get(`/market/chan/${encodeURIComponent(code)}/simulate`,
-             { params: { interval, capital, refresh }, timeout: 120000 })
+             { params: { interval, capital, refresh,
+                         start: range?.[0] || undefined, end: range?.[1] || undefined },
+               timeout: 120000 })
 }
 
 export default api

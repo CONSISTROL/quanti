@@ -34,7 +34,19 @@
         </el-select>
 
         <el-divider direction="vertical" />
-        <el-select v-model="spanBars" style="width: 120px" size="small">
+        <el-tooltip placement="bottom" :show-after="200"
+          content="限定送进缠论计算的K线范围 —— 它会改变笔与中枢的划分本身。留空则用默认窗口(最后 1200/800/500 根)。">
+          <span class="layer-label">分析区间</span>
+        </el-tooltip>
+        <el-date-picker v-model="dateRange" type="daterange" value-format="YYYY-MM-DD"
+                        start-placeholder="起始日" end-placeholder="终止日" size="small"
+                        style="width: 236px" unlink-panels
+                        @change="loadStructure(false)" />
+        <el-tooltip placement="bottom" :show-after="200"
+          content="只缩放视图,不改笔与中枢的划分。当前价与结构算在完整数据上。">
+          <span class="layer-label">显示范围</span>
+        </el-tooltip>
+        <el-select v-model="spanBars" style="width: 116px" size="small">
           <el-option label="全部" :value="0" />
           <el-option label="最近 250 根" :value="250" />
           <el-option label="最近 120 根" :value="120" />
@@ -48,6 +60,9 @@
             {{ data.quote.close }} ({{ data.quote.change_pct >= 0 ? '+' : '' }}{{ data.quote.change_pct }}%)
           </b>
         </span>
+        <el-tag v-if="data?.range?.custom" size="small" type="warning">
+          分析区间 {{ data.range.start }} ~ {{ data.range.end }}({{ data.counts.bars }} 根)
+        </el-tag>
         <el-button :icon="Refresh" :loading="loading" @click="loadStructure(true)">刷新</el-button>
       </div>
     </el-card>
@@ -62,6 +77,13 @@
           <el-alert v-if="snapNote" type="warning" :title="snapNote" show-icon :closable="false"
                     class="mb" />
           <EChart :key="`${code}-${interval}`" :option="chartOption" height="720px" />
+          <p class="chart-legend">
+            <b>蓝框边框</b>:实线 = 中枢正常生灭;虚线 = 延伸到 8 笔上限、下一笔本来还会重叠,
+            按第020/033课该升级为更大级别的中枢(这种框的标签里会写出「延伸至上限」)。
+            <b>灰色虚线</b> = GG / DD(中枢震荡的最高、最低点),常贴着框边上下一二十像素,
+            范围通常明显宽于框 —— 它是独立的线,不是框的边框。
+            <b>深色折线</b> = 笔(<span class="dash-sample">虚线</span>为未完成的那一笔)。
+          </p>
         </div>
       </el-card>
 
@@ -95,10 +117,13 @@
               <span v-if="data.last_zhongshu" class="v mono">
                 [{{ data.last_zhongshu.zd }}, {{ data.last_zhongshu.zg }}]
                 <em>{{ data.last_zhongshu.bi_count }}笔</em>
-                <em v-if="data.last_zhongshu.is_extended" class="warn">已延伸至上限</em>
-                <em :class="data.last_zhongshu.leave_date ? '' : 'ok'">
-                  {{ data.last_zhongshu.leave_date ? '离开于 ' + data.last_zhongshu.leave_date : '尚无离开笔' }}
+                <em v-if="data.last_zhongshu.leave_reason === 'capped'" class="warn">
+                  延伸至上限 → 该升级,三类买卖点归更大级别
                 </em>
+                <em v-else-if="data.last_zhongshu.leave_date">
+                  离开于 {{ data.last_zhongshu.leave_date }}
+                </em>
+                <em v-else class="ok">尚无离开笔</em>
               </span>
               <span v-else class="v muted">—</span>
             </div>
@@ -131,6 +156,9 @@
               <span class="v mono">
                 {{ data.counts.bis }} 笔 · {{ data.counts.segments }} 线段 ·
                 {{ data.counts.zhongshus }} 中枢
+                <em v-if="data.counts.capped_zhongshus" class="warn">
+                  其中 {{ data.counts.capped_zhongshus }} 个延伸至上限
+                </em>
               </span>
             </div>
             <div class="kv">
@@ -226,7 +254,8 @@
         <span class="side-title">系统交易模拟 · 缠论买卖点驱动</span>
         <span v-if="sim" class="strength">
           {{ sim.name }} · {{ intervalLabel(sim.interval) }} ·
-          {{ sim.start_date }} ~ {{ sim.end_date }}({{ sim.trading_days }} 个交易日)·
+          {{ sim.start_date }} ~ {{ sim.end_date }}
+          ({{ sim.bars }} 根{{ intervalLabel(sim.interval) }} · 约 {{ sim.years }} 年)·
           初始资金 {{ sim.capital.toLocaleString() }}
         </span>
       </div>
@@ -341,6 +370,8 @@
           <el-collapse-item title="模拟口径与规则出处" name="simrules">
             <p class="basis">信号:{{ sim.rules.signals }}</p>
             <p class="basis">成交:{{ sim.rules.execution }}</p>
+            <p class="basis">年化与夏普:{{ sim.rules.annualize }}</p>
+            <p class="basis warn-text">间隔口径:{{ sim.rules.lag_note }}</p>
             <p class="basis">策略A:{{ sim.rules.strategy_a }}</p>
             <p class="basis">策略B:{{ sim.rules.strategy_b }}</p>
             <p class="basis warn-text">实现口径说明:{{ sim.rules.reading_note }}</p>
@@ -397,6 +428,9 @@ const show = reactive({
 })
 const chosenMas = usePersistentRef('chan.mas', ['ma5', 'ma13', 'ma34', 'ma89', 'ma233'])
 const spanBars = usePersistentRef('chan.span', 250)
+// 分析区间:限定送进缠论计算的K线范围。空表示用默认窗口(最后 1200/800/500 根)。
+// 它和「显示范围」是两件事:显示范围只是缩放视图,不改划分;分析区间会改笔与中枢本身。
+const dateRange = usePersistentRef('chan.range', null)
 
 const intervalLabel = (iv) => ({ '1d': '日线', '1w': '周线', '1M': '月线' }[iv] || iv)
 const statusText = (s) => ({ failed: '已跌破', holding: '已站住上沿', inside: '区间内', none: '—' }[s] || s)
@@ -418,7 +452,7 @@ async function loadStructure(refresh = false) {
   loading.value = true
   error.value = ''
   try {
-    data.value = await api.marketChan(code.value, interval.value, force)
+    data.value = await api.marketChan(code.value, interval.value, force, dateRange.value)
   } catch (e) {
     error.value = e.message
     data.value = null
@@ -562,13 +596,38 @@ const build = computed(() => {
         : ZS_FILL
       zsArea.push([
         { coord: [i0, z.zd], itemStyle,
-          label: (i1 - i0) >= 12
-            ? { show: true, position: 'insideTop', fontSize: 10, color: '#2c6fbb',
-                formatter: `${z.zd}~${z.zg}` }
-            : { show: false } },
+          // 只有最近一个中枢标四行详注;其余宽中枢只标一行区间值 —— 否则同时有五六个
+          // 中枢各显示四行文字,会叠在一起把图糊死。
+          label: z.is_current
+            ? {
+                show: true, position: 'insideTopLeft', fontSize: 10, lineHeight: 14,
+                backgroundColor: 'rgba(255,255,255,0.9)', padding: [3, 5], borderRadius: 3,
+                // 四个值放一个多行标签里,避免它们各自贴着自己的线时在垂直方向撞在一起
+                // (ZG 与 GG 往往只差几十点)。颜色与图中线条对应。
+                formatter: [
+                  `{zg|ZG ${z.zg}  中枢上沿}`,
+                  `{zd|ZD ${z.zd}  中枢下沿}`,
+                  `{gg|GG ${z.gg}  中枢震荡最高}`,
+                  `{dd|DD ${z.dd}  中枢震荡最低}`
+                ].join('\n'),
+                rich: {
+                  zg: { color: '#1d4ed8', fontSize: 10, lineHeight: 14, fontWeight: 'bold' },
+                  zd: { color: '#1d4ed8', fontSize: 10, lineHeight: 14, fontWeight: 'bold' },
+                  gg: { color: '#64748b', fontSize: 10, lineHeight: 14 },
+                  dd: { color: '#64748b', fontSize: 10, lineHeight: 14 }
+                }
+              }
+            : (i1 - i0) >= 16
+              ? { show: true, position: 'insideTop', fontSize: 10, color: '#2c6fbb',
+                  formatter: `${z.zd}~${z.zg}${z.is_extended ? '(延伸至上限)' : ''}` }
+              : { show: false } },
         { coord: [i1, z.zg], itemStyle }
       ])
-      const thin = { color: 'rgba(44,111,187,0.4)', width: 0.8, type: 'dashed', opacity: 0.7 }
+      // GG/DD 一律用灰蓝,绝不和蓝色的框边框同色 —— 二者常常只差几十点、贴在一起,
+      // 同色会让人以为「框的边框是虚线」。
+      const cur = !!z.is_current
+      const thin = { color: cur ? 'rgba(100,116,139,0.95)' : 'rgba(148,163,184,0.8)',
+                     width: cur ? 1.3 : 1, type: 'dashed', opacity: 1 }
       zsLines.push([{ coord: [i0, z.gg], lineStyle: thin }, { coord: [i1, z.gg] }])
       zsLines.push([{ coord: [i0, z.dd], lineStyle: thin }, { coord: [i1, z.dd] }])
     }
@@ -722,8 +781,11 @@ const simPick = ref('full')
 const pctText = (v, signed = true) =>
   (v == null ? '—' : (signed && v > 0 ? '+' : '') + (v * 100).toFixed(1) + '%')
 const pctClass = (v) => (v == null ? 'muted' : v > 0 ? 'up' : v < 0 ? 'down' : '')
-const lagText = (row) =>
-  row.lag_bars == null ? '—' : `极值点后 ${row.lag_bars} 根K线才可成交`
+const lagText = (row) => {
+  if (row.lag_bars == null) return '—'
+  const confirm = row.confirm_lag ?? (row.lag_bars - 1)
+  return `结构确认 ${confirm} 根 + 次日开盘 1 根`
+}
 
 const simRows = computed(() => {
   const s = sim.value
@@ -787,7 +849,7 @@ async function loadSim() {
   simError.value = ''
   sim.value = null
   try {
-    sim.value = await api.marketSimulate(code.value, interval.value)
+    sim.value = await api.marketSimulate(code.value, interval.value, 100000, false, dateRange.value)
     simPick.value = sim.value.strategies?.[0]?.key || 'full'
   } catch (e) {
     simError.value = e.message
@@ -814,6 +876,11 @@ onMounted(async () => {
 .up { color: #e8403a; }
 .down { color: #1ba27a; }
 .mono { font-variant-numeric: tabular-nums; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.chart-legend {
+  margin: 6px 2px 0; font-size: 11.5px; line-height: 1.75; color: #6b7280;
+}
+.chart-legend b { color: #374151; }
+.dash-sample { border-bottom: 1px dashed #64748b; }
 .muted { color: #9ca3af; }
 .ml4 { margin-left: 4px; }
 .mt8 { margin-top: 8px; }
