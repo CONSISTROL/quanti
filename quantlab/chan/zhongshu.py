@@ -51,10 +51,22 @@ def find_zhongshus(bis: list[dict]) -> list[dict]:
             i += 1
             continue
         j = i + 3
-        while j < n and j - i < MAX_ZHONGSHU_BI:
-            if not _overlap(bis[j]["lo"], bis[j]["hi"], zd, zg):
-                break
+        while j < n and j - i < MAX_ZHONGSHU_BI and _overlap(bis[j]["lo"], bis[j]["hi"], zd, zg):
             j += 1
+        # 只有「到了上限、而且下一笔本来还会重叠」才算被上限截断 —— 这才对应第020/033课
+        # 该升级的情形。若中枢只是自然走到第 8 笔结束,不该标成延伸至上限。
+        capped = (j - i >= MAX_ZHONGSHU_BI and j < n
+                  and _overlap(bis[j]["lo"], bis[j]["hi"], zd, zg))
+        # leave_bi 必须是「第一根**真的**不再与中枢区间重叠的笔」。
+        # 中枢撞到 8 笔上限时停下的那一笔仍然在重叠,不能当成离开笔 —— 否则后面
+        # 「是否在 ZG 上方 / ZD 下方」的判定必然失败,等于让所有延伸至上限的中枢
+        # 都出不了三类买卖点,而那是 bug 造成的假象。
+        #
+        # 附带说明:撞上限意味着这个中枢按第020/033课该**升级**,那三类买卖点就归到
+        # 更大级别去了(第053课:中枢结束要么转成更大的中枢、要么形成新的该级别中枢)。
+        # 我没有做递归升级,所以这类中枢本级不出信号 —— 这是取舍,不是漏判。
+        leave = None if capped else (j if j < n else None)
+        leave_reason = "capped" if capped else ("departed" if j < n else "at_end")
         zsegs = [bis[k] for k in range(i, j) if bis[k]["direction"] == zdir]
         zs.append({
             "bi_from": i,
@@ -66,8 +78,9 @@ def find_zhongshus(bis: list[dict]) -> list[dict]:
             "gg": max(z["hi"] for z in zsegs),
             "dd": min(z["lo"] for z in zsegs),
             "z_count": len(zsegs),
-            "is_extended": (j - i) >= MAX_ZHONGSHU_BI,
-            "leave_bi": j if j < n else None,
+            "is_extended": capped,
+            "leave_reason": leave_reason,
+            "leave_bi": leave,
             "start_bar": bis[i]["start_bar"],
             "end_bar": bis[j - 1]["end_bar"],
         })

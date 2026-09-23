@@ -192,6 +192,7 @@ def analyze(df, interval: str = "1d", higher_zhongshus: list[dict] | None = None
             "gg": _r(z["gg"], 2), "dd": _r(z["dd"], 2),
             "is_extended": z["is_extended"], "is_current": z["is_current"],
             "leave_date": z["leave_date"],
+            "leave_reason": z.get("leave_reason"),
         } for z in zs],
         "signals": [{
             "date": s["date"], "price": _r(s["price"], 2), "kind": s["kind"],
@@ -216,6 +217,7 @@ def analyze(df, interval: str = "1d", higher_zhongshus: list[dict] | None = None
         "counts": {
             "bars": len(d), "fractals": len(fractals), "bis": len(bis),
             "segments": len(segs), "zhongshus": len(zs),
+            "capped_zhongshus": sum(1 for z in zs if z["is_extended"]),
             "divergences": len(divs), "signals": len(sigs),
         },
         "summary": summary,

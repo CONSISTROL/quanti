@@ -172,6 +172,31 @@ def build_summary(ctx: dict) -> dict:
             f"{cur['end_date']} {cur['end_price']:.2f})。"
             f"第106课:一笔至少延伸 6 个基本K线单位,5日线都碰不到的反弹不成笔。", "106")
 
+    # 3.5) 为什么有些中枢没有买卖点 —— 这是最常被问到的,主动解释掉
+    if zs:
+        capped = [z for z in zs if z.get("leave_reason") == "capped"]
+        at_end = [z for z in zs if z.get("leave_reason") == "at_end"]
+        sig_bi = {s.get("bi_index") for s in sigs if s["kind"] in ("buy3", "sell3")}
+        came_back = []
+        for z in zs:
+            lb = z.get("leave_bi")
+            if lb is None or z in capped:
+                continue
+            if lb not in sig_bi and (lb + 1) not in sig_bi:
+                came_back.append(z)
+        if capped:
+            add(f"{len(zs)} 个中枢里有 {len(capped)} 个延伸到了 8 笔上限。按第020/033课这已经"
+                f"该**升级为更大级别的中枢**,三类买卖点也就归到更大级别去了 —— 所以本级不给这类"
+                f"中枢标买卖点。这是取舍:我没有实现中枢的递归升级。", "020/033")
+        if came_back:
+            add(f"另有 {len(came_back)} 个中枢虽然结束了(有笔离开区间),但价格很快又回到中枢里,"
+                f"属于**离开失败**。第020课的三类买卖点要求「回试不跌破 ZG / 回抽不升破 ZD」,"
+                f"也就是离开的那一方必须站得住;又跑回去就构不成买卖点,那只是中枢扩张/继续震荡。",
+                "020")
+        if at_end:
+            add(f"{len(at_end)} 个中枢一直延伸到数据末尾,还没有出现离开的笔,自然也没有三类买卖点。",
+                "020")
+
     # 4) 背驰
     if divs:
         d = divs[-1]
