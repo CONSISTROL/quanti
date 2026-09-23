@@ -113,7 +113,20 @@ else
 fi
 
 # ---------------------------------------------------------------- 2. 前端
-if [[ "$FORCE_BUILD" == "1" || ! -f "frontend/dist/index.html" ]]; then
+# dist 不存在、或落后于 frontend/src 与构建配置时为真。
+# run_web.py 只托管预构建产物、不会自己编译，所以不能只看 index.html 是否存在，
+# 否则改了 src 却忘记 npm run build 会一直看到旧页面。
+frontend_stale() {
+    if [[ ! -f "frontend/dist/index.html" ]]; then
+        return 0
+    fi
+    local newer
+    newer="$(find frontend/src frontend/index.html frontend/vite.config.js frontend/package.json \
+        -newer frontend/dist/index.html -print -quit 2>/dev/null || true)"
+    [[ -n "$newer" ]]
+}
+
+if [[ "$FORCE_BUILD" == "1" ]] || frontend_stale; then
     echo "[2/4] 构建 Vue 前端..."
     if ! command -v npm >/dev/null 2>&1; then
         echo "[ERROR] 未找到 npm，请先安装 Node.js" >&2
@@ -124,7 +137,7 @@ if [[ "$FORCE_BUILD" == "1" || ! -f "frontend/dist/index.html" ]]; then
     fi
     (cd frontend && npm run build)
 else
-    echo "[2/4] 前端产物已存在，跳过构建（--force-build 可强制重建）"
+    echo "[2/4] 前端产物已是最新，跳过构建（--force-build 可强制重建）"
 fi
 
 if [[ "$MODE" == "install-only" ]]; then

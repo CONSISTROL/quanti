@@ -584,6 +584,10 @@ python start_web.py --build      # 强制重新构建前端
 python start_web.py --port 9000  # 自定义端口
 ```
 
+> `start_web.py` 会检查 `frontend/src`（以及 `index.html` / `vite.config.js` / `package.json`）
+> 是否比 `frontend/dist/index.html` 新，落后就自动 `npm run build`，所以改完前端直接重启即可；
+> `--skip-build` 可完全跳过构建（systemd 服务用的就是这个）。
+
 ### 手动启动
 
 ```bash
@@ -601,6 +605,10 @@ python run_web.py
 ```
 
 访问 `http://<服务器IP>:8000`。
+
+> ⚠️ `run_web.py` 只托管**已经构建好的** `frontend/dist`，本身不会编译前端。
+> 改了 `frontend/src` 却忘记 `npm run build`，页面会一直停留在旧版本
+> （典型症状：新增的页面/路由在浏览器里根本不存在）。手动启动流程请务必执行上面的第 2 步。
 
 开发模式（前端热更新）：
 
